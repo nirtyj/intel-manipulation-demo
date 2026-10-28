@@ -1,0 +1,136 @@
+diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/bucket_sort.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/bucket_sort.py
+index 0051051..f873499 100644
+--- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/bucket_sort.py
++++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/bucket_sort.py
+@@ -710,6 +710,8 @@ class BucketSortTask:
+         """The bucket colours left to right (by decreasing y) as the last reset put them."""
+         self.reset_count = 0
+         """How many resets have run: a new value means a new layout and instruction."""
++        self.settled: frozenset[str] = frozenset()
++        """Objects already sorted when an instruction was set in place; success ignores where they are."""
+ 
+     @property
+     def allowed_pairs(self) -> tuple[Pair, ...]:
+@@ -763,6 +765,7 @@ class BucketSortTask:
+         self.layout = layout
+         self.slot_colors = layout.colors_left_to_right
+         self.instruction = sample_instruction(rng, self._allowed, vary_text=self.vary_text)
++        self.settled = frozenset()
+         self.reset_count += 1
+         mujoco.mj_forward(model, data)
+         logger.info(
+@@ -792,7 +795,7 @@ class BucketSortTask:
+             instruction is not None
+             and in_bucket[instruction.object] == instruction.bucket
+             and resting[instruction.object]
+-            and all(in_bucket[name] is None for name in OBJECTS if name != instruction.object)
++            and all(in_bucket[name] is None for name in OBJECTS if name not in {instruction.object, *self.settled})
+         )
+         buckets = {
+             color: {
+diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/bucket_sort_demo.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/bucket_sort_demo.py
+index ae11f68..96f1fe1 100644
+--- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/bucket_sort_demo.py
++++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/bucket_sort_demo.py
+@@ -1732,7 +1732,11 @@ class BucketSortDemonstrator:
+             episode.outcome = "success"  # type: ignore[union-attr]
+             self.stats.successes += 1
+             return
+-        others = [name for name, color in state.in_bucket.items() if color is not None and name != instruction.object]
++        others = [
++            name
++            for name, color in state.in_bucket.items()
++            if color is not None and name != instruction.object and name not in self.task.settled
++        ]
+         if others:
+             self._fail(data, f"the {others[0]} ended up in a bucket", dt)
+             return
+diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/control.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/control.py
+index ac04b19..6e2f180 100644
+--- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/control.py
++++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/control.py
+@@ -271,6 +271,8 @@ class OperatorControls:
+             self._set_seed(command.seed)
+         elif isinstance(command, cmd.SetAutoResetCommand):
+             self._set_auto_reset(enabled=command.enabled, dwell_s=command.dwell_s)
++        elif isinstance(command, cmd.SetInstructionCommand):
++            self._set_instruction(command.object, command.bucket)
+         elif isinstance(command, cmd.SetBeltSpeedCommand):
+             self._set_belt_speed(command.speed)
+         elif isinstance(command, cmd.SetOverviewCommand):
+@@ -507,6 +509,20 @@ class OperatorControls:
+         if not has_belt:
+             logger.warning("Scene '{}' has no conveyor belt", self._current_scene_id)
+ 
++    def _set_instruction(self, obj: str, bucket: str) -> None:
++        """Give bucket_sort a new instruction in place: same layout, and a new demonstrator episode."""
++        from physicalai_mujoco_plugin.bucket_sort import BucketSortTask, Instruction  # noqa: PLC0415
++
++        task = self._sim.on_reset if self._sim is not None else None
++        if not isinstance(task, BucketSortTask):
++            logger.warning("Scene '{}' takes no instruction", self._current_scene_id)
++            return
++        state = task.evaluate(self._sim.model, self._sim.data)  # type: ignore[union-attr]
++        task.settled = frozenset(name for name, color in state.in_bucket.items() if color is not None and name != obj)
++        task.instruction = Instruction(object=obj, bucket=bucket)
++        task.reset_count += 1  # a new value starts a new demonstrator episode without moving anything
++        logger.info("Instruction set: {}", task.instruction.canonical_text)
++
+     def _init_episode_auto_reset(self) -> None:
+         """Attach the scene's episode controller: the conveyor's, bucket sort's, else the cube-on-plate auto-reset."""
+         from physicalai_mujoco_plugin.bucket_sort import BucketSortEpisode, BucketSortTask  # noqa: PLC0415
+diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/http_server.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/http_server.py
+index 78643dd..be3f91c 100644
+--- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/http_server.py
++++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/http_server.py
+@@ -109,6 +109,14 @@ class SetAutoResetCommand:
+     dwell_s: float | None = None
+ 
+ 
++@dataclass(frozen=True)
++class SetInstructionCommand:
++    """bucket_sort only: replace the instruction without a reset; the demonstrator starts over from the arm's pose."""
++
++    object: str
++    bucket: str
++
++
+ @dataclass(frozen=True)
+ class SetBeltSpeedCommand:
+     """Change the conveyor belt speed (m/s) in scenes that have a belt."""
+@@ -167,6 +175,7 @@ SimCommand = (
+     | SetOverviewCommand
+     | SetSeedCommand
+     | SetAutoResetCommand
++    | SetInstructionCommand
+     | SetBeltSpeedCommand
+     | SetObjectPoseCommand
+     | SetAutopilotCommand
+@@ -225,6 +234,13 @@ class SeedRequest(BaseModel):
+     seed: Annotated[int, Field(ge=0, le=MAX_SEED)] | None
+ 
+ 
++class InstructionRequest(BaseModel):
++    """Body for ``POST /episode/instruction``."""
++
++    object: Literal["resistor", "battery", "cpu"]
++    bucket: Literal["red", "blue", "black"]
++
++
+ class AutoResetRequest(BaseModel):
+     """Body for ``POST /episode/auto-reset``."""
+ 
+@@ -642,6 +658,13 @@ def _add_sim_control_routes(
+         commands.put(SetAutoResetCommand(enabled=request.enabled, dwell_s=request.dwell_s))
+         return {"status": "queued", "enabled": request.enabled, "dwell_s": request.dwell_s}
+ 
++    @app.post("/episode/instruction")
++    def episode_instruction(request: InstructionRequest) -> dict[str, Any]:
++        if get_status().get("episode", {}).get("kind") != "bucket_sort":
++            raise HTTPException(status_code=409, detail="Only the bucket_sort scene takes an instruction")
++        commands.put(SetInstructionCommand(object=request.object, bucket=request.bucket))
++        return {"status": "queued", "object": request.object, "bucket": request.bucket}
++
+     @app.post("/conveyor/belt-speed")
+     def belt_speed(request: BeltSpeedRequest) -> dict[str, Any]:
+         if get_status().get("episode", {}).get("kind") != "conveyor":

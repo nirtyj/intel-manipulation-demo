@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worldline Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Live console for a 1920x1080 take: Intel's 3D viewer left (~60%), conversation / beliefs / safety right,
+   scoreboard and event stream across the bottom. Dark only. Green fresh/done, amber aging, red stale/blocked,
+   blue revised. Everything on screen comes from the orchestrator's /events WebSocket. */
+:root {
+  color-scheme: dark;
+  --bg: #0c1215; --panel: #121a1e; --panel-2: #172126; --panel-3: #1d2a30;
+  --line: #233238; --line-2: #33464e;
+  --fg: #e2eaec; --muted: #8d9fa6; --faint: #60737a; --ice: #cde4ec;
+  --ok: #3fd08c; --ok-bg: #12301f; --warn: #f2b440; --warn-bg: #352812;
+  --bad: #f05a52; --bad-bg: #3a1513; --rev: #5aa8ff; --rev-bg: #142a45; --on-bad: #1c0706;
+  --display: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
+  --body: "Barlow", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.45 var(--body); -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--ice); outline-offset: 2px; }
+kbd { font: 500 11px var(--mono); border: 1px solid var(--line-2); border-radius: 4px; padding: 1px 5px; color: var(--muted); }
+.mono { font-family: var(--mono); }
+.app { display: grid; gap: 12px; max-width: 1920px; margin: 0 auto; padding: 12px 16px;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-areas: "top top" "cell side" "score score"; }
+@media (max-width: 1020px) { .app { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "cell" "side" "score"; } }
+.top { grid-area: top; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 20px; }
+.brand { display: flex; gap: 12px; align-items: center; }
+.name { font: 700 23px/1.05 var(--display); }
+.sub { font: 600 11.5px var(--display); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { font-size: 12.5px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--panel); white-space: nowrap; }
+.tag b { color: var(--fg); font-weight: 600; }
+.tag.mono { font-size: 11.5px; }
+.conn { display: inline-flex; align-items: center; gap: 6px; }
+.conn i { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
+.conn.on i { background: var(--ok); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; display: flex; flex-direction: column; }
+.panel-h { display: flex; align-items: center; justify-content: space-between; gap: 6px 10px; flex-wrap: wrap; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+.panel-h h2 { margin: 0; font: 600 13px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.aux { font-size: 12px; color: var(--faint); }
+.cell { grid-area: cell; }
+.side { grid-area: side; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.score { grid-area: score; }
+.btn { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 12px; font-weight: 500; }
+.btn:hover { border-color: var(--ice); }
+.btn.ghost { background: transparent; font-size: 13px; padding: 4px 10px; }
+.tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chk { display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); cursor: pointer; }
+.chk input { accent-color: var(--ice); }
+
+/* live cell */
+.cell-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+.taskbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; }
+.taskname { font: 600 19px var(--display); }
+.taskname small { font: 500 12px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); margin-right: 8px; }
+.phase { font: 500 12px var(--mono); color: var(--muted); margin-left: 10px; }
+.rail { display: flex; flex-wrap: wrap; gap: 4px; }
+.rail span { font: 500 11px var(--mono); padding: 3px 7px; border-radius: 4px; border: 1px solid var(--line); color: var(--faint); }
+.rail span.done { color: var(--muted); border-color: var(--line-2); }
+.rail span.on { color: var(--bg); background: var(--ice); border-color: var(--ice); }
+.rail span.ok { color: var(--bg); background: var(--ok); border-color: var(--ok); }
+.rail span.bad { color: var(--on-bad); background: var(--bad); border-color: var(--bad); }
+.stage { position: relative; flex: 1; min-height: 420px; aspect-ratio: 16 / 10; max-height: 640px; border-radius: 8px; overflow: hidden; background: #000; border: 1px solid var(--line); }
+.stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.stage .offline { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--muted); font-size: 14px; }
+.pip { position: absolute; left: 10px; bottom: 10px; width: 30%; max-width: 280px; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; background: #000; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+.pip img { display: block; width: 100%; height: auto; }
+.pip span { position: absolute; left: 6px; top: 4px; font: 500 10.5px var(--mono); color: var(--ice); text-shadow: 0 1px 2px #000; }
+.banner { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 24px); z-index: 2;
+  font: 600 16px/1.3 var(--display); padding: 8px 14px; border-radius: 6px; text-align: center; box-shadow: 0 8px 28px rgba(0,0,0,.45); pointer-events: none; }
+.banner.stop, .banner.block { background: var(--bad); color: var(--on-bad); }
+.banner.verify { background: var(--warn); color: var(--bg); }
+.toast { position: absolute; right: 10px; bottom: 10px; max-width: 50%; z-index: 2; background: var(--panel-3); border: 1px solid var(--line-2); padding: 6px 10px; border-radius: 6px; font-size: 13px; pointer-events: none; }
+.demo { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; font-size: 12.5px; color: var(--faint); }
+.focus-hint { font-size: 12.5px; color: var(--warn); }
+
+/* conversation */
+.msgs { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; height: 220px; overflow-y: auto; }
+.msg { max-width: 90%; padding: 7px 11px; border-radius: 10px; font-size: 15px; overflow-wrap: anywhere; }
+.msg.op { align-self: flex-end; background: var(--panel-3); border: 1px solid var(--line-2); }
+.msg.cell { align-self: flex-start; border: 1px solid var(--line); }
+.msg .who { display: block; font: 500 11px var(--mono); color: var(--faint); margin-bottom: 2px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chip { font: 500 11.5px var(--mono); padding: 2px 7px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+.chip b { color: var(--fg); font-weight: 500; }
+.cmd { display: flex; gap: 8px; padding: 10px 14px 6px; border-top: 1px solid var(--line); }
+.cmd input { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--line-2); border-radius: 7px; padding: 7px 10px; color: var(--fg); font: inherit; }
+.ptt { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 11px; white-space: nowrap; opacity: .5; cursor: not-allowed; }
+.sugg { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 14px 12px; }
+.sugg button { background: transparent; border: 1px dashed var(--line-2); border-radius: 999px; padding: 3px 10px; font-size: 13px; color: var(--muted); }
+.sugg button:hover { color: var(--fg); border-color: var(--ice); }
+
+/* beliefs */
+.legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 8px; height: 8px; border-radius: 50%; }
+.bgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 12px 14px; }
+@media (max-width: 1400px) and (min-width: 1021px) { .bgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .bgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.bcard { --st: var(--ok); --st-bg: var(--ok-bg); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.bcard[data-state="aging"] { --st: var(--warn); --st-bg: var(--warn-bg); }
+.bcard[data-state="stale"] { --st: var(--bad); --st-bg: var(--bad-bg); border-color: var(--bad-bg); }
+.bcard[data-state="revised"] { --st: var(--rev); --st-bg: var(--rev-bg); border-color: var(--rev-bg); }
+.bc-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.bc-name { font: 600 16px var(--display); }
+.badge { font: 600 10.5px var(--mono); text-transform: uppercase; letter-spacing: .06em; padding: 2px 6px; border-radius: 4px; background: var(--st-bg); color: var(--st); }
+.bc-loc { font-size: 13.5px; min-height: 2.6em; }
+.bar { height: 5px; border-radius: 3px; background: var(--bg); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--st); transition: width .4s; }
+.bc-meta { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; font: 11.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.bc-meta .src { color: var(--faint); }
+.why-btn { margin-left: auto; background: none; border: none; color: var(--ice); font: 500 12.5px var(--body); text-decoration: underline; text-underline-offset: 2px; padding: 0; }
+.why { margin: 2px 0 0; padding: 6px 0 0 16px; border-top: 1px solid var(--line); font: 11.5px/1.5 var(--mono); color: var(--muted); }
+
+/* safety */
+.sbody { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+.guard-row { display: flex; justify-content: space-between; align-items: center; gap: 6px 10px; flex-wrap: wrap; }
+.pill { font: 600 13px var(--display); letter-spacing: .08em; text-transform: uppercase; padding: 4px 11px; border-radius: 999px; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.sactions { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+.stop { background: var(--bad); color: var(--on-bad); border: none; border-radius: 8px; padding: 10px 22px; font: 700 21px/1 var(--display); letter-spacing: .12em; display: flex; gap: 10px; align-items: center; }
+.stop kbd { color: var(--on-bad); border-color: var(--on-bad); }
+.note { margin: 0; font-size: 12.5px; color: var(--faint); }
+
+/* scoreboard */
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto; }
+.stat { padding: 12px 16px; border-right: 1px solid var(--line); min-width: 0; }
+.stat .k { font: 600 12px var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.stat .v { font: 600 30px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+.stat .s { font-size: 12px; color: var(--faint); }
+.stat-end { display: flex; align-items: center; padding: 10px 16px; }
+@media (max-width: 1020px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .stat { border-right: none; border-bottom: 1px solid var(--line); } .stat .v { font-size: 24px; } }
+.events { border-top: 1px solid var(--line); }
+.events summary { padding: 9px 16px; cursor: pointer; color: var(--muted); font-size: 13px; }
+.logwrap { overflow-x: auto; }
+#log { margin: 0; padding: 4px 16px 14px; max-height: 240px; overflow-y: auto; font: 11.5px/1.55 var(--mono); color: var(--muted); white-space: pre; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect x="1.5" y="1.5" width="31" height="31" rx="7" fill="none" stroke="#cde4ec" stroke-width="2"/><circle cx="12" cy="21" r="5" fill="none" stroke="#cde4ec" stroke-width="2"/><circle cx="23" cy="12" r="3" fill="#5aa8ff"/><path d="M15.5 17.5 L20.5 14.5" stroke="#cde4ec" stroke-width="2" stroke-dasharray="2 2"/></svg>
+      <div><div class="name">Talk to the Cell</div><div class="sub">Worldline Console</div></div>
+    </div>
+    <div class="meta">
+      <span class="tag mono">bucket_sort · franka_fr3 · seed 42</span>
+      <span class="tag"><b>Simulated</b> robot, physics, object poses</span>
+      <span class="tag"><b>Real</b> intent, Worldline, director, latencies</span>
+      <span class="tag mono" id="hwTag">numbers from: this host · CPU</span>
+      <span class="tag conn" id="conn"><i></i><span>connecting</span></span>
+    </div>
+  </header>
+
+  <section class="panel cell" aria-label="Live cell">
+    <div class="panel-h">
+      <h2>Live cell</h2>
+      <div class="tools">
+        <label class="chk"><input type="checkbox" id="pipToggle" checked> Overview camera</label>
+      </div>
+    </div>
+    <div class="cell-body">
+      <div class="taskbar">
+        <div class="taskname"><small>Task</small><span id="taskText">No task</span><span class="phase" id="phase"></span></div>
+        <div class="rail" id="rail"></div>
+      </div>
+      <div class="stage" id="stage">
+        <iframe id="viewer" title="MuJoCo 3D viewer" allow="fullscreen"></iframe>
+        <div class="offline" id="offline">Connecting to the 3D viewer…</div>
+        <div class="pip" id="pip"><img id="cam" alt="Overview camera"><span>overview camera · /cam/overview</span></div>
+        <div class="banner" id="banner" hidden></div>
+        <div class="toast" id="toast" hidden></div>
+      </div>
+      <div class="demo">
+        <span>Take controls:</span>
+        <button class="btn ghost" data-move="blue">Move blue bin</button>
+        <button class="btn ghost" data-move="red">Move red bin</button>
+        <button class="btn ghost" data-move="black">Move black bin</button>
+        <button class="btn ghost" id="advanceBtn">Advance clock 2 min</button>
+        <button class="btn ghost" id="lookBtn">LOOK</button>
+        <button class="btn ghost" id="resetBtn">Reset scene</button>
+        <span class="focus-hint" id="focusHint" hidden>Keyboard is in the 3D viewer. Click anywhere outside it to use Space and Esc again.</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="side">
+    <section class="panel" aria-label="Conversation">
+      <div class="panel-h"><h2>Conversation</h2><span class="aux mono">keyword + fuzzy intent · LLM next</span></div>
+      <div class="msgs" id="msgs" aria-live="polite"></div>
+      <form class="cmd" id="cmdForm" autocomplete="off">
+        <button type="button" class="ptt" title="Voice (Whisper on OpenVINO) is the next step" disabled>Hold to talk</button>
+        <input id="cmd" type="text" placeholder="Type a command, e.g. put the battery in the red bin" aria-label="Command">
+        <button type="submit" class="btn">Send</button>
+      </form>
+      <div class="sugg" id="sugg"></div>
+    </section>
+
+    <section class="panel" aria-label="Belief board">
+      <div class="panel-h"><h2>Belief board</h2>
+        <div class="legend"><span><i style="background:var(--ok)"></i>fresh</span><span><i style="background:var(--warn)"></i>aging</span><span><i style="background:var(--bad)"></i>stale</span><span><i style="background:var(--rev)"></i>revised</span></div>
+      </div>
+      <div class="bgrid" id="bgrid"></div>
+    </section>
+
+    <section class="panel" aria-label="Safety">
+      <div class="panel-h"><h2>Safety</h2><span class="aux mono">STOP → autopilot off · Action Guard next</span></div>
+      <div class="sbody">
+        <div class="guard-row"><span id="stopPill" class="pill ok">Running</span><span class="aux mono" id="stopInfo"></span></div>
+        <div class="sactions">
+          <button type="button" class="stop" id="stopBtn">STOP <kbd>Esc</kbd></button>
+          <button type="button" class="btn" id="resumeBtn" hidden>Resume</button>
+        </div>
+        <p class="note">Today STOP switches the demonstrator off and the arm holds. The Action Guard (finite, range, rate, stale checks in the runtime's callback chain) and the Chaos toggle bolt on here next.</p>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel score" aria-label="Scoreboard">
+    <div class="stats">
+      <div class="stat"><div class="k">Commands understood</div><div class="v" id="sUnd">0 / 0</div><div class="s">target ≥ 18 of 20 phrasings</div></div>
+      <div class="stat"><div class="k">Tasks completed</div><div class="v" id="sTasks">0</div><div class="s" id="sTasksS">episode outcome from /health</div></div>
+      <div class="stat"><div class="k">Unsafe actions blocked</div><div class="v" id="sBlocked">–</div><div class="s">guard not wired yet</div></div>
+      <div class="stat"><div class="k">Command to motion</div><div class="v" id="sC2M">–</div><div class="s" id="sC2Ms">p50 –</div></div>
+      <div class="stat"><div class="k">Stop to hold</div><div class="v" id="sS2H">–</div><div class="s" id="sS2Hs">p50 –</div></div>
+      <div class="stat-end"><button type="button" class="btn ghost" id="resetCounters">Reset counters</button></div>
+    </div>
+    <details class="events" id="events"><summary>Event stream · <span class="mono">ws /events</span> · same envelopes as events.jsonl · <span id="evCount">0 events</span></summary><div class="logwrap"><pre id="log"></pre></div></details>
+  </section>
+</div>
+
+<script>
+(() => {
+"use strict";
+const $ = s => document.querySelector(s);
+const ENTS = ["battery", "cpu", "resistor", "bucket_red", "bucket_blue", "bucket_black"];
+const NAME = { battery: "Battery", cpu: "CPU chip", resistor: "Resistor", bucket_red: "Red bin", bucket_blue: "Blue bin", bucket_black: "Black bin" };
+const RAIL = ["IDLE", "RESOLVE", "VERIFY", "EXECUTE", "CONFIRM", "DONE"];
+
+/* ---------- server calls ---------- */
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); toast(j.detail || `${path} failed (${r.status})`); return null; }
+    return await r.json();
+  } catch (e) { toast(`Can't reach the orchestrator: ${e.message}`); return null; }
+}
+
+/* ---------- conversation ---------- */
+const msgs = $("#msgs");
+let lastOp = null;
+function bubble(who, text, meta) {
+  const d = document.createElement("div"); d.className = "msg " + who;
+  const w = document.createElement("span"); w.className = "who"; w.textContent = (who === "op" ? "Operator" : "Cell") + (meta ? " · " + meta : "");
+  const p = document.createElement("div"); p.textContent = text;
+  d.append(w, p); msgs.append(d); msgs.scrollTop = msgs.scrollHeight;
+  return d;
+}
+function chips(pairs) {
+  const row = document.createElement("div"); row.className = "chips";
+  for (const [k, v] of pairs) { const c = document.createElement("span"); c.className = "chip"; const b = document.createElement("b"); b.textContent = v; c.append(k + " ", b); row.append(c); }
+  return row;
+}
+
+/* ---------- beliefs ---------- */
+const cards = {};
+for (const e of ENTS) {
+  const c = document.createElement("article"); c.className = "bcard";
+  c.innerHTML = '<div class="bc-top"><span class="bc-name"></span><span class="badge"></span></div><div class="bc-loc"></div><div class="bar"><i></i></div><div class="bc-meta"><span class="pct"></span><span class="ago"></span><span class="src"></span><button type="button" class="why-btn" aria-expanded="false">Why?</button></div><ol class="why" hidden></ol>';
+  c.querySelector(".bc-name").textContent = NAME[e];
+  const btn = c.querySelector(".why-btn"), ol = c.querySelector(".why");
+  btn.addEventListener("click", async () => {
+    ol.hidden = !ol.hidden; btn.setAttribute("aria-expanded", String(!ol.hidden));
+    if (!ol.hidden) await loadWhy(e);
+  });
+  $("#bgrid").append(c); cards[e] = c;
+}
+async function loadWhy(e) {
+  const ol = cards[e].querySelector(".why");
+  try {
+    const j = await (await fetch(`/beliefs/${e}/why`)).json();
+    ol.textContent = "";
+    for (const h of j.history) {
+      const li = document.createElement("li");
+      li.textContent = `${h.when}: ${h.text} · [${h.position.join(", ")}] m · ${h.source} · ${h.observed_at.slice(11, 19)}`;
+      ol.append(li);
+    }
+  } catch { ol.textContent = "Couldn't load the history."; }
+}
+const ago = s => s < 90 ? `${Math.round(s)} s ago` : `${Math.round(s / 60)} min ago`;
+function setBelief(b) {
+  const c = cards[b.entity]; if (!c) return;
+  c.dataset.state = b.state;
+  c.querySelector(".badge").textContent = b.state;
+  c.querySelector(".bc-loc").textContent = b.text;
+  c.querySelector(".bar i").style.width = Math.round(b.confidence * 100) + "%";
+  c.querySelector(".pct").textContent = Math.round(b.confidence * 100) + "%";
+  c.querySelector(".ago").textContent = "seen " + ago(b.age_s);
+  c.querySelector(".src").textContent = b.source;
+  if (!c.querySelector(".why").hidden) loadWhy(b.entity);
+}
+
+/* ---------- task / safety ---------- */
+let task = { state: "IDLE", task: "No task" };
+const visited = new Set();
+function renderTask(t) {
+  if (t.state === "RESOLVE") visited.clear();
+  visited.add(t.state);
+  task = t;
+  const rail = $("#rail"); rail.textContent = "";
+  RAIL.forEach((s, i) => {
+    const el = document.createElement("span"); let label = s, cls = "";
+    if (i === RAIL.length - 1 && (t.state === "STOPPED" || t.state === "FAILED")) { label = t.state; cls = "bad"; }
+    else if (s === t.state) cls = s === "DONE" ? "ok" : "on";
+    else if (visited.has(s)) cls = "done";
+    el.className = cls; el.textContent = label; rail.append(el);
+  });
+  $("#taskText").textContent = t.task;
+  $("#phase").textContent = t.robot_phase && t.state === "EXECUTE" ? `demonstrator: ${t.robot_phase}` : "";
+  const pill = $("#stopPill");
+  pill.textContent = t.stop_latched ? "STOP latched · holding" : "Running";
+  pill.className = "pill " + (t.stop_latched ? "bad" : "ok");
+  $("#resumeBtn").hidden = !t.stop_latched;
+}
+let bannerTimer = null, toastTimer = null;
+function banner(b) {
+  const el = $("#banner"); clearTimeout(bannerTimer);
+  if (b.kind === "clear") { el.hidden = true; return; }
+  el.textContent = b.text; el.className = "banner " + b.kind; el.hidden = false;
+  if (!b.sticky) bannerTimer = setTimeout(() => { el.hidden = true; }, 3000);
+}
+function toast(text) {
+  const el = $("#toast"); el.textContent = text; el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 3500);
+}
+function renderStats(s) {
+  $("#sUnd").textContent = `${s.understood} / ${s.commands}`;
+  $("#sTasks").textContent = s.tasks;
+  $("#sTasksS").textContent = s.failed ? `${s.failed} failed · from /health` : "episode outcome from /health";
+  const c = s.command_to_motion_ms, h = s.stop_to_hold_ms;
+  $("#sC2M").textContent = c.last != null ? (c.last / 1000).toFixed(2) + " s" : "–";
+  $("#sC2Ms").textContent = `p50 ${c.p50 != null ? (c.p50 / 1000).toFixed(2) + " s" : "–"} · n=${c.n} · typed`;
+  $("#sS2H").textContent = h.last != null ? h.last + " ms" : "–";
+  $("#sS2Hs").textContent = `p50 ${h.p50 != null ? h.p50 + " ms" : "–"} · n=${h.n}`;
+  $("#stopInfo").textContent = h.last != null ? `last stop → hold ${h.last} ms` : "";
+}
+
+/* ---------- event log ---------- */
+const log = []; let evN = 0, logDirty = false;
+function logEvent(ev) {
+  log.unshift(JSON.stringify(ev)); if (log.length > 200) log.pop();
+  evN++; logDirty = true;
+}
+setInterval(() => {
+  $("#evCount").textContent = evN + " events";
+  if (logDirty && $("#events").open) { $("#log").textContent = log.join("\n"); logDirty = false; }
+}, 500);
+$("#events").addEventListener("toggle", () => { logDirty = true; });
+
+/* ---------- live streams ---------- */
+let viewerSet = false;
+function setViewer(port) {
+  if (viewerSet) return; viewerSet = true;
+  const url = `${location.protocol}//${location.hostname}:${port}/`;
+  const f = $("#viewer");
+  f.addEventListener("load", () => { $("#offline").hidden = true; });
+  f.src = url;
+  setTimeout(() => { if (!$("#offline").hidden) $("#offline").textContent = `No 3D viewer at ${url}. Forward port ${port} too (ssh -L ${port}:localhost:${port}).`; }, 6000);
+}
+function setCam(on) {
+  $("#pip").hidden = !on;
+  $("#cam").src = on ? "/cam/overview" : "";
+}
+$("#pipToggle").addEventListener("change", e => setCam(e.target.checked));
+$("#cam").addEventListener("error", () => { $("#pip").hidden = true; });
+
+function handle(ev) {
+  const p = ev.payload;
+  switch (ev.type) {
+    case "snapshot":
+      p.beliefs.forEach(setBelief); renderTask(p.task); setViewer(p.viewer_port); return;
+    case "beliefs": p.beliefs.forEach(setBelief); return;  // periodic age/confidence tick, not logged
+    case "belief": setBelief(p); break;
+    case "transcript":
+      if (p.speaker === "operator") lastOp = bubble("op", p.text, p.source === "typed" ? "typed" : p.source);
+      else bubble("cell", p.text);
+      break;
+    case "intent":
+      if (lastOp) {
+        const pr = [["intent", p.intent]];
+        if (p.object) pr.push(["object", p.object]); if (p.bucket) pr.push(["bucket", p.bucket]); if (p.entity) pr.push(["entity", p.entity]);
+        pr.push(["conf", Number(p.confidence).toFixed(2)], ["parser", p.parser]);
+        lastOp.append(chips(pr)); msgs.scrollTop = msgs.scrollHeight;
+      }
+      break;
+    case "task_state": renderTask(p); break;
+    case "banner": banner(p); break;
+    case "metric": if ("commands" in p) renderStats(p); break;
+    case "demo":
+      if (p.action === "move_bin") toast(`Moved the ${p.color} bin in the simulator. Worldline was not told.`);
+      if (p.action === "advance_clock") toast(`Clock advanced ${Math.round(p.seconds / 60)} min. Beliefs age; the world does not change.`);
+      break;
+  }
+  logEvent(ev);
+}
+
+let ws = null;
+function connect() {
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/events`);
+  ws.onopen = () => { $("#conn").classList.add("on"); $("#conn span").textContent = "live"; };
+  ws.onmessage = m => handle(JSON.parse(m.data));
+  ws.onclose = () => { $("#conn").classList.remove("on"); $("#conn span").textContent = "reconnecting"; setTimeout(connect, 1500); };
+}
+connect();
+setCam(true);
+
+/* ---------- input ---------- */
+$("#cmdForm").addEventListener("submit", e => {
+  e.preventDefault(); const i = $("#cmd"); const v = i.value.trim(); i.value = "";
+  if (v) post("/command", { text: v });
+});
+const SUGG = ["Put the battery in the red bin", "Where's the chip?", "Toss the chip in the blue one", "Put the resistor in a bin", "black", "I moved the red bin", "Look", "Stop", "Resume"];
+for (const s of SUGG) { const b = document.createElement("button"); b.type = "button"; b.textContent = s; b.addEventListener("click", () => post("/command", { text: s })); $("#sugg").append(b); }
+$("#stopBtn").addEventListener("click", () => post("/stop"));
+$("#resumeBtn").addEventListener("click", () => post("/resume"));
+$("#lookBtn").addEventListener("click", () => post("/look"));
+$("#advanceBtn").addEventListener("click", () => post("/demo/advance-clock", { seconds: 120 }));
+$("#resetBtn").addEventListener("click", () => post("/demo/reset"));
+$("#resetCounters").addEventListener("click", () => post("/demo/reset-counters"));
+document.querySelectorAll("[data-move]").forEach(b => b.addEventListener("click", () => post("/demo/move-bin", { color: b.dataset.move })));
+document.addEventListener("keydown", e => { if (e.key === "Escape") { e.preventDefault(); post("/stop"); } });
+// Keys go to the iframe once it has focus; say so, since Esc then no longer reaches this page.
+window.addEventListener("blur", () => setTimeout(() => { $("#focusHint").hidden = document.activeElement !== $("#viewer"); }, 0));
+window.addEventListener("focus", () => { $("#focusHint").hidden = true; });
+})();
+</script>
+</body>
+</html>
