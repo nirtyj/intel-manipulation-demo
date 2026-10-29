@@ -43,6 +43,27 @@ Fixes found along the way, each from a logged failure:
 | Placed part knocked on the way home | the placed part was no longer an obstacle | keep the placed part as an obstacle for the retreat and the home path |
 | Fit < 0.7 on correct poses | table and pad pixels in the mask when the part fills the box | cut mask points within 6 mm of the table |
 
+### Second collection: cameras at ~11 fps, RGB-D timing fixed, payload speed limit
+
+| | |
+|---|---|
+| Successful flips | **53 / 75 (71%)** |
+| Runs where the cell acted on a pose | 62. Rotation error median 0.0°, max 6.4°; position error median 0.5 mm, max 8.2 mm |
+| Perception refusals | 13 (12 runs before the RGB-D timing fix accounted for 3 of them) |
+| Part lost or knocked over | 8 |
+| Placement error on success | median 4.2 mm, p90 18 mm |
+| Time per run | median 86 s |
+
+Two simulator-side issues surfaced only because the second collection was examined frame by frame:
+
+1. **Stale cameras.** The scene's 8192-px shadow maps made every 640×480 colour frame cost ~500 ms in
+   software rendering. While the arm moved, the cameras updated about once a second, so the first dataset's
+   images lagged its joint states. Without shadow maps both cameras run at ~11 fps.
+2. **Depth and pose out of step.** The plugin read the camera pose *after* the ~50 ms depth render while
+   physics kept stepping. With a settling arm, image and pose were a few mm apart. The free-space check
+   then flagged ~10% of a correct pose, pushing it under the 0.93 bar. The pose is now read when the scene
+   is captured, and perception waits for a capture newer than its request.
+
 ## v3: ACT policy (physicalai-train, Intel Xeon only)
 
 ### Training on Intel Xeon
