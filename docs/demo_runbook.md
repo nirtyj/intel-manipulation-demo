@@ -24,11 +24,11 @@ the right are the mode switch, Run / STOP / Reset, the stage rail, the perceptio
 2. **Traditional → Run flip** (about 80 s). Point at the scene detection, then the two wrist views and the
    6-DoF pose with both views agreeing. Then the plan: grasp from the library, clearance, RRT time. Then
    the flip around the wall.
-3. **Reset part**, then **ACT → Run flip** (about 40 s). Point out that nothing runs between the pixels and
+3. **Reset part**, then **ACT → Run flip** (about 55 s; it succeeds about half the time, so have the video ready). Point out that nothing runs between the pixels and
    the joints except one OpenVINO network, about 12 ms per step on the CPU.
 4. Results table: runs, successes and median time per mode, scored by the simulator afterwards.
 
-Backup if live runs misbehave: `media/v2_traditional_flip.mp4`, plus the v3 video when rendered.
+Backup if live runs misbehave: `media/v2_traditional_flip.mp4` and `media/v3_act_flip.mp4`.
 
 ## Talk track (about 90 s)
 
@@ -36,8 +36,8 @@ Backup if live runs misbehave: `media/v2_traditional_flip.mp4`, plus the v3 vide
 - **Traditional.** "Simulated RealSense RGB-D, Grounding DINO and SAM-6D on OpenVINO, a fused voxel map,
   Pinocchio IK, and an RRT planner checked with Coal. No ground truth anywhere in the loop. It's precise
   and explainable, but every stage is engineered, and it takes about 80 s."
-- **Physical AI.** "The traditional cell recorded its own successful runs. That's 50-plus demonstrations,
-  collected with no teleoperation. physicalai-train trained ACT on them on a Xeon with AMX, and it was
+- **Physical AI.** "The traditional cell recorded its own successful runs: 168 demonstrations over three
+  collections, with no teleoperation. The deployed policy learned from 30 of them. physicalai-train trained ACT on them on a Xeon with AMX, and it was
   exported to OpenVINO. It runs in Intel's RobotRuntime on the same cell: images and joint angles in,
   joint targets out."
 - **The point.** "The classical stack becomes the data engine for the learned one, and the whole loop

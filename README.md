@@ -54,8 +54,11 @@ read after a run, to score it, and in opt-in diagnostics (`CELL_DIAG=1`).
 * **Training.** `physicalai fit --config v3/act_cpu.yaml` (physicalai-train, ACT, two 120×160 camera inputs,
   2 s action chunks re-planned every second), bf16 on an Intel Xeon with AMX.
 * **Export.** `policy.export(..., backend="openvino")` → `exports/act_part_flip`.
-* **Deployment.** `v3/run_policy.py`: physicalai `RobotRuntime` at 10 Hz with `IPCamera` on the
-  simulator's MJPEG streams, the cell's `SharedRobot`, and `PolicySource(InferenceModel(export))`.
+* **Deployment.** `v3/run_policy.py`: physicalai `RobotRuntime` at 10 Hz with a physicalai `Camera` on each
+  simulator camera's latest frame (`v3/sim_camera.py`), the cell's `SharedRobot`, and
+  `PolicySource(InferenceModel(export))` with ACT's temporal ensembling as the chunk smoother.
+* **Result.** Round 4a (30 consistent demonstrations, 2 h on a 16-vCPU Xeon) flips the part 4/8 times,
+  placed 11–19 mm from the pad centre, in ~54 s.
 
 ## Run it
 
@@ -81,7 +84,7 @@ uvicorn v2.cell_api:app --port 8000      # http://localhost:8000
 
 ## Results
 
-See [docs/results.md](docs/results.md): every number measured, every fix traced to a logged failure. Demo video of v2: `media/v2_traditional_flip.mp4`.
+See [docs/results.md](docs/results.md): every number measured, every fix traced to a logged failure. Demo videos: `media/v2_traditional_flip.mp4` (traditional) and `media/v3_act_flip.mp4` (ACT, round 4a).
 
 ## Layout
 
