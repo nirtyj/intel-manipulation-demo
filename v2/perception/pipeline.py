@@ -33,9 +33,22 @@ class Observation:
     mask: np.ndarray | None
     T_world_obj: np.ndarray | None = None
     score: float = 0.0
-    fitness: float = 0.0       # surface fit minus 2 x free-space violation (1.0 = perfect, < 0.5 = do not act)
+    fitness: float = 0.0       # mean over views of surface fit minus 2 x free-space violation (1.0 = perfect)
     rmse_mm: float = 0.0
     timings_ms: dict = field(default_factory=dict)
+    per_view: list = field(default_factory=list)
+
+
+@dataclass
+class View:
+    """One wrist capture with its detection and SAM-6D hypotheses (world frame)."""
+    frame: RGBD
+    detection: Detection
+    mask: np.ndarray
+    cloud_world: np.ndarray
+    hypotheses: list
+    sam6d_score: float
+    ms: dict
 
 
 class PartPerception:
@@ -79,25 +92,51 @@ class PartPerception:
         obs.timings_ms["dino"] = d.ms
         return c_world, obs
 
-    def six_dof(self, frame: RGBD, hypotheses: int = 3) -> Observation:
+    def observe(self, frame: RGBD, hypotheses: int = 3) -> View | None:
+        """One wrist view: detect the part, mask it, and collect SAM-6D's pose hypotheses (world frame)."""
         d, m = self.detect(frame)
-        obs = Observation(frame.name, d, m)
         if d is None or m is None or m.sum() < 40:
-            return obs
-        obs.timings_ms["dino"] = d.ms
+            return None
         p = self.pose.estimate(frame.rgb, frame.depth, frame.K, m, d.score, hypotheses=hypotheses)
         if p is None:
-            return obs
-        obs.timings_ms["sam6d"] = p.ms
+            return None
+        hyps = []
+        for R, t, _ in self.pose.last_hypotheses:
+            T = np.eye(4)
+            T[:3, :3], T[:3, 3] = R, t
+            hyps.append(frame.T_world_cam @ T)
+        cloud = self.pose.last_cloud @ frame.T_world_cam[:3, :3].T + frame.T_world_cam[:3, 3]
+        return View(frame, d, m, cloud, hyps, p.score, {"dino": d.ms, "sam6d": p.ms})
+
+    def fuse(self, views: list[View]) -> Observation:
+        """Pick the pose that every view agrees with.
+
+        Candidates: each view's SAM-6D hypotheses and their half-turns about the part's own axes, refined by
+        ICP against the points of all views together. Each candidate is then scored in every view, as the
+        share of that view's points on the posed model surface minus twice the share of the posed model
+        sitting where that camera sees through to something farther away (free space). One view can be
+        fooled when the foot is hidden behind the column; two views from different sides rarely are.
+        """
+        last = views[-1]
+        obs = Observation(last.frame.name, last.detection, last.mask)
         t0 = time.perf_counter()
-        T_cam_obj, fitness, rmse = verify_pose(self.pose.last_hypotheses, self.pose.last_cloud, self.model_surface,
-                                               frame.depth, frame.K)
-        T_world_obj = gravity_snap(frame.T_world_cam @ T_cam_obj)
-        obs.timings_ms["icp"] = (time.perf_counter() - t0) * 1000
-        obs.T_world_obj = T_world_obj
-        obs.score = p.score
-        obs.fitness, obs.rmse_mm = fitness, rmse * 1000
+        best, per_view = select_pose(views, self.model_surface)
+        obs.timings_ms = {"dino": sum(v.ms["dino"] for v in views), "sam6d": sum(v.ms["sam6d"] for v in views),
+                          "verify": (time.perf_counter() - t0) * 1000}
+        if best is None:
+            return obs
+        T_world_obj, score, rmse = best
+        obs.T_world_obj = gravity_snap(T_world_obj)
+        obs.score = max(v.sam6d_score for v in views)
+        obs.fitness, obs.rmse_mm, obs.per_view = score, rmse * 1000, per_view
         return obs
+
+    def six_dof(self, frame: RGBD, hypotheses: int = 3) -> Observation:
+        view = self.observe(frame, hypotheses)
+        if view is None:
+            d, m = self.detect(frame)
+            return Observation(frame.name, d, m)
+        return self.fuse([view])
 
 
 def _flips() -> list[np.ndarray]:
@@ -131,35 +170,43 @@ def free_space_violation(T_cam_obj: np.ndarray, model_m: np.ndarray, depth: np.n
     return float(np.mean(d[valid] > z[ok][inside][valid] + margin))
 
 
-def verify_pose(hypotheses: list, cloud_cam: np.ndarray, model_m: np.ndarray, depth: np.ndarray, K: np.ndarray,
-                max_dist: float = 0.004):
-    """Pick the pose whose model surface best explains the observed points.
+def view_score(T_world_obj: np.ndarray, view: View, model_m: np.ndarray, max_dist: float = 0.004) -> tuple[float, float, float]:
+    """(fit, free-space violation, inlier rmse) of a world pose in one view."""
+    from scipy.spatial import cKDTree
 
-    Candidates: every SAM-6D hypothesis and its half-turns about the part's own axes. Each is refined by ICP
-    (observed points onto the posed model surface) and scored two ways: the share of observed points within
-    ``max_dist`` of the model surface, minus the share of the model sitting where the camera sees through it
-    (free space). Surface fit alone accepts a pose that explains every visible point but puts the foot on
-    the wrong side; the free-space term rejects it.
-    """
+    posed = model_m @ T_world_obj[:3, :3].T + T_world_obj[:3, 3]
+    dist, _ = cKDTree(posed).query(view.cloud_world, distance_upper_bound=max_dist)
+    inl = np.isfinite(dist)
+    fit = float(inl.mean())
+    rmse = float(np.sqrt(np.mean(dist[inl] ** 2))) if inl.any() else np.inf
+    T_cam_obj = np.linalg.inv(view.frame.T_world_cam) @ T_world_obj
+    return fit, free_space_violation(T_cam_obj, model_m, view.frame.depth, view.frame.K), rmse
+
+
+def select_pose(views: list[View], model_m: np.ndarray):
+    """Best world pose over all views' hypotheses x half-turns, ICP-refined on the fused cloud."""
     import open3d as o3d
 
-    obs = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(cloud_cam.astype(np.float64)))
-    best = (None, -1.0, np.inf)
-    for R, t, _score in hypotheses:
-        for F in _flips():
-            T = np.eye(4)
-            T[:3, :3], T[:3, 3] = R @ F, t
-            model = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_m @ T[:3, :3].T + T[:3, 3]))
-            reg = o3d.pipelines.registration.registration_icp(
-                obs, model, 0.015, np.eye(4), o3d.pipelines.registration.TransformationEstimationPointToPoint(),
-                o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=40))
-            T_ref = np.linalg.inv(reg.transformation) @ T
-            model_ref = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_m @ T_ref[:3, :3].T + T_ref[:3, 3]))
-            ev = o3d.pipelines.registration.evaluate_registration(obs, model_ref, max_dist)
-            score = ev.fitness - 2.0 * free_space_violation(T_ref, model_m, depth, K)
-            if score > best[1] or (score == best[1] and ev.inlier_rmse < best[2]):
-                best = (T_ref, score, ev.inlier_rmse)
-    return best
+    fused = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(np.concatenate([v.cloud_world for v in views])))
+    best, best_views = None, []
+    for view in views:
+        for T0 in view.hypotheses:
+            for F in _flips():
+                T = T0.copy()
+                T[:3, :3] = T0[:3, :3] @ F
+                model = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_m @ T[:3, :3].T + T[:3, 3]))
+                reg = o3d.pipelines.registration.registration_icp(
+                    fused, model, 0.015, np.eye(4), o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+                    o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=40))
+                T_ref = np.linalg.inv(reg.transformation) @ T
+                scores = [view_score(T_ref, v, model_m) for v in views]
+                score = float(np.mean([fit - 2.0 * free for fit, free, _ in scores]))
+                rmse = float(np.mean([r for _, _, r in scores if np.isfinite(r)] or [np.inf]))
+                if best is None or score > best[1] + 1e-9 or (abs(score - best[1]) < 1e-9 and rmse < best[2]):
+                    best = (T_ref, score, rmse)
+                    best_views = [{"camera_pos": np.round(v.frame.T_world_cam[:3, 3], 3).tolist(), "fit": round(f, 3),
+                                   "free_space": round(fr, 3)} for v, (f, fr, _) in zip(views, scores)]
+    return best, best_views
 
 
 def gravity_snap(T_world_obj: np.ndarray, max_tilt_deg: float = 20.0) -> np.ndarray:
@@ -209,4 +256,4 @@ def to_json(T: np.ndarray | None) -> list | None:
     return None if T is None else np.round(T, 5).tolist()
 
 
-__all__ = ["PartPerception", "RGBD", "Observation", "fetch_rgbd", "annotate", "to_json", "json"]
+__all__ = ["PartPerception", "RGBD", "Observation", "View", "fetch_rgbd", "annotate", "to_json", "json"]

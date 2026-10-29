@@ -1,0 +1,47 @@
+diff --git a/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/CMakeLists.txt b/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/CMakeLists.txt
+index 674691d..460529c 100644
+--- a/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/CMakeLists.txt
++++ b/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/CMakeLists.txt
+@@ -15,7 +15,7 @@ find_package(OpenVINO REQUIRED PATHS "${OpenVINO_DIR_PY}")
+ find_package(Eigen3 REQUIRED)
+ find_package(OpenMP REQUIRED)
+ 
+-set(SRC ball_query.cpp custom_svd.cpp custom_svd_u.cpp custom_svd_v.cpp custom_det.cpp custom_debug_node.cpp ov_extension.cpp)
++set(SRC ball_query.cpp custom_svd.cpp custom_svd_u.cpp custom_svd_v.cpp custom_det.cpp custom_debug_node.cpp furthest_point_sampling.cpp gather_operation.cpp grouping_operation.cpp three_nn.cpp three_interpolate.cpp ov_extension.cpp)
+ # set(SRC furthest_point_sampling.cpp gather_operation.cpp three_nn.cpp three_interpolate.cpp cylinder_query.cpp ball_query.cpp grouping_operation.cpp ov_extension.cpp)
+ 
+ add_library(${TARGET_NAME} MODULE ${SRC})
+diff --git a/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/ov_extension.cpp b/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/ov_extension.cpp
+index 6c500fe..62d2590 100644
+--- a/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/ov_extension.cpp
++++ b/SAM-6D/Pose_Estimation_Model/model/ov_pointnet2_op/ov_extension.cpp
+@@ -8,6 +8,11 @@
+ #include "custom_svd_v.hpp"
+ #include "custom_det.hpp"
+ #include "custom_debug_node.hpp"
++#include "furthest_point_sampling.hpp"
++#include "gather_operation.hpp"
++#include "grouping_operation.hpp"
++#include "three_nn.hpp"
++#include "three_interpolate.hpp"
+ 
+ // clang-format off
+ //! [ov_extension:entry_point]
+@@ -32,6 +37,16 @@ OPENVINO_CREATE_EXTENSIONS(
+ 
+         std::make_shared<ov::OpExtension<TemplateExtension::CustomDebugNode>>(),
+         std::make_shared<ov::frontend::OpExtension<TemplateExtension::CustomDebugNode>>(),
++        std::make_shared<ov::OpExtension<TemplateExtension::FurthestPointSampling>>(),
++        std::make_shared<ov::frontend::OpExtension<TemplateExtension::FurthestPointSampling>>(),
++        std::make_shared<ov::OpExtension<TemplateExtension::GatherOperation>>(),
++        std::make_shared<ov::frontend::OpExtension<TemplateExtension::GatherOperation>>(),
++        std::make_shared<ov::OpExtension<TemplateExtension::GroupingOperation>>(),
++        std::make_shared<ov::frontend::OpExtension<TemplateExtension::GroupingOperation>>(),
++        std::make_shared<ov::OpExtension<TemplateExtension::ThreeNN>>(),
++        std::make_shared<ov::frontend::OpExtension<TemplateExtension::ThreeNN>>(),
++        std::make_shared<ov::OpExtension<TemplateExtension::ThreeInterpolate>>(),
++        std::make_shared<ov::frontend::OpExtension<TemplateExtension::ThreeInterpolate>>(),
+     }));
+ //! [ov_extension:entry_point]
+ // clang-format on
+\ No newline at end of file

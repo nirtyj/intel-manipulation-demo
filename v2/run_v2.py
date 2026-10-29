@@ -30,7 +30,8 @@ ROBOT = "mujoco-franka_panda-follow"
 PART_START = {"position": [0.48, 0.24, 0.055], "wxyz": [0.0, 1.0, 0.0, 0.0]}  # upside down on the green pad
 PLACE_XY = np.array([0.48, -0.24])
 RUNS = Path(__file__).resolve().parents[1] / "runs" / "v2"
-MIN_FIT = 0.5  # share of observed points the posed model must explain before the robot acts on it
+MIN_FIT = 0.7  # mean over views of (surface fit - 2 x free-space violation) before the robot acts on a pose
+VIEWPOINTS = ((35.0, 0.28), (-35.0, 0.28), (0.0, 0.30))  # wrist look-at viewpoints: azimuth (deg), distance (m)
 
 
 def post(url: str, body: dict | None = None, timeout: float = 300) -> dict:
@@ -149,35 +150,36 @@ def perceive(cell: Cell, trial: Trial, wmap: WorldMap) -> np.ndarray | None:
     exclude = [(coarse, 0.10)]
     wmap.integrate(scene, robot_surface_samples(cell.world.robot_geom, cell.world.model, cell.world.data,
                                                 pin.GeometryData(cell.world.robot_geom), q), exclude)
-    look = solve_look_pose(kin, q, T_tcp_cam, coarse)
-    if look is None:
-        trial.log("look", ok=False)
-        return None
-    cell.resume_recording()
-    q = cell.move_to(look[0], duration=2.0, settle=0.8)
-    cell.pause_recording()
-    r = post(PERCEPTION + "/six_dof")
-    trial.log("six_dof", score=r["pose_score"], fit=r.get("fit"), dino=r["detection_score"], ms=r["timings_ms"].get("total"))
-    cell.mark("6-DoF pose", {"pose_score": r["pose_score"], "fit": r.get("fit"), "dino": r["detection_score"],
-                             **r["timings_ms"]}, ["wrist"])
-    if r["T_world_obj"] is None or (r.get("fit") or 0) < MIN_FIT:
-        # A poor fit means the pose does not explain the depth: look again from another side, never guess.
-        second = solve_look_pose(kin, q, T_tcp_cam, coarse, distance=0.28, azimuth_deg=35)
-        if second is None:
-            return None
+    # Look at the part from two sides of the robot's reach. Each wrist view gives SAM-6D hypotheses; the
+    # pose is the one both views' depth agrees with. A third view only if they still disagree.
+    post(PERCEPTION + "/views/reset")
+    r, added = None, 0
+    for az, dist in VIEWPOINTS:
+        look = solve_look_pose(kin, q, T_tcp_cam, coarse, distance=dist, azimuth_deg=az)
+        if look is None:
+            trial.log("look", azimuth=az, ok=False)
+            continue
         cell.resume_recording()
-        q = cell.move_to(second[0], duration=1.5, settle=0.8)
+        q = cell.move_to(look[0], duration=1.8, settle=0.8)
         cell.pause_recording()
-        r = post(PERCEPTION + "/six_dof")
-        trial.log("six_dof_retry", score=r["pose_score"], fit=r.get("fit"), ms=r["timings_ms"].get("total"))
-        cell.mark("6-DoF pose", {"pose_score": r["pose_score"], "fit": r.get("fit"), "dino": r["detection_score"],
+        v = post(PERCEPTION + "/views/add")
+        trial.log("wrist_view", azimuth=az, added=v["added"], sam6d=v.get("sam6d_score"), ms=v.get("timings_ms", {}).get("total"))
+        wrist = fetch_rgbd("wrist")
+        wmap.integrate(wrist, robot_surface_samples(cell.world.robot_geom, cell.world.model, cell.world.data,
+                                                    pin.GeometryData(cell.world.robot_geom), q), exclude)
+        added += int(v["added"])
+        if added < 2:
+            continue
+        r = post(PERCEPTION + "/views/pose")
+        trial.log("six_dof", views=r["views"], fit=r["fit"], score=r["pose_score"], ms=r["timings_ms"].get("total"),
+                  per_view=r["per_view"])
+        cell.mark("6-DoF pose", {"views": r["views"], "fit": r["fit"], "pose_score": r["pose_score"],
                                  **r["timings_ms"]}, ["wrist"])
-        if r["T_world_obj"] is None or (r.get("fit") or 0) < MIN_FIT:
-            return None
+        if r["T_world_obj"] is not None and r["fit"] >= MIN_FIT:
+            break
+    if r is None or r["T_world_obj"] is None or r["fit"] < MIN_FIT:
+        return None  # the views do not agree on a pose: never guess
     T = np.array(r["T_world_obj"])
-    wrist = fetch_rgbd("wrist")
-    wmap.integrate(wrist, robot_surface_samples(cell.world.robot_geom, cell.world.model, cell.world.data,
-                                                pin.GeometryData(cell.world.robot_geom), q), [(T[:3, 3], 0.10)])
     trial.log("map", voxels=len(wmap.counts), table_z=round(float(wmap.table_z), 4), frames=wmap.frames)
     return T
 
