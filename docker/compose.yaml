@@ -9,6 +9,8 @@ services:
       - "8000:8000"   # console + cell API
       - "8080:8080"   # simulator API
       - "9090:9090"   # Intel's 3D viewer (embedded in the console)
+    environment:
+      - CELL_OBJECT=${CELL_OBJECT:-l_part}   # l_part or soup_can
     shm_size: "1gb"   # SharedRobot and camera frames
     volumes:
       - ../models:/app/models:ro                    # Grounding DINO IR, part mesh + SAM-6D templates

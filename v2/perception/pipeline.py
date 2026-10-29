@@ -39,7 +39,8 @@ class Observation:
     rmse_mm: float = 0.0
     timings_ms: dict = field(default_factory=dict)
     per_view: list = field(default_factory=list)
-    up_vote: float | None = None  # axial parts: SAM-6D's score-weighted vote for "top up" (+) vs "top down" (-)
+    up_vote: float | None = None  # axial parts: render-and-compare margin for "top up" (+) vs "top down" (-)
+    appearance_ncc: float | None = None  # axial parts: best match of the rendered label to the images
 
 
 @dataclass
@@ -59,6 +60,9 @@ class PartPerception:
     def __init__(self) -> None:
         self.dino = GroundingDino()
         self.pose = SAM6DPose(OBJECT.cad_mm, OBJECT.templates)
+        if OBJECT.axial:
+            from v2.perception.appearance import RenderCompare
+            self.appearance = RenderCompare(OBJECT.cad_mm)
         self.rng = np.random.default_rng(0)
         import trimesh
         mesh = trimesh.load(OBJECT.cad_mm, force="mesh")
@@ -138,9 +142,13 @@ class PartPerception:
             return obs
         T_world_obj, score, rmse = best
         obs.T_world_obj = gravity_snap(T_world_obj)
-        if OBJECT.axial:  # geometry fixes the axis; which end is up comes from SAM-6D's appearance match
-            obs.up_vote = up_vote(views)
-            obs.T_world_obj = canonical_axial(obs.T_world_obj, 1.0 if obs.up_vote >= 0 else -1.0)
+        if OBJECT.axial:  # geometry fixes the axis; which end is up comes from render-and-compare of the label
+            t1 = time.perf_counter()
+            T, obs.appearance_ncc, margin = self.appearance.resolve(views, obs.T_world_obj)
+            up = 1.0 if T[2, 2] >= 0 else -1.0
+            obs.up_vote = up * margin
+            obs.T_world_obj = canonical_axial(T, up)
+            obs.timings_ms["appearance"] = (time.perf_counter() - t1) * 1000
         obs.score = max(v.sam6d_score for v in views)
         obs.fitness, obs.rmse_mm, obs.per_view = score, rmse * 1000, per_view
         return obs
@@ -239,15 +247,6 @@ def select_pose(views: list[View], model_m: np.ndarray, rotations: list[np.ndarr
                     best_views = [{"camera_pos": np.round(v.frame.T_world_cam[:3, 3], 3).tolist(), "fit": round(f, 3),
                                    "free_space": round(fr, 3)} for v, (f, fr, _) in zip(views, scores)]
     return best, best_views
-
-
-def up_vote(views: list[View]) -> float:
-    """Score-weighted vote of every view's SAM-6D hypotheses on which way the part's +z points.
-
-    For an axially symmetric part the depth fits both ways equally; SAM-6D's hypotheses come from matching
-    the colour templates (the can's label reads one way up), so their own scores carry the answer.
-    """
-    return float(sum(s * np.sign(T[2, 2]) for v in views for T, s in zip(v.hypotheses, v.hypothesis_scores)))
 
 
 def gravity_snap(T_world_obj: np.ndarray, max_tilt_deg: float = 20.0) -> np.ndarray:

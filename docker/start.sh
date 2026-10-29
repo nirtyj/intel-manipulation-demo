@@ -3,7 +3,10 @@
 # Stops everything when any of them exits.
 set -e
 cd /app
-SCENE=${SCENE:-scenes/can_flip/scene.xml}
+case "${CELL_OBJECT:-l_part}" in  # the object the cell turns over (v2/objects.py)
+  soup_can) SCENE=${SCENE:-scenes/soup_can/scene.xml} ;;
+  *)        SCENE=${SCENE:-scenes/can_flip/scene.xml} ;;
+esac
 
 PHYSICALAI_DEPTH_CAMERAS=${PHYSICALAI_DEPTH_CAMERAS:-wrist,overview} \
 PHYSICALAI_DEPTH_PERIOD_S=${PHYSICALAI_DEPTH_PERIOD_S:-0.5} \

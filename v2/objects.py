@@ -37,7 +37,12 @@ class ObjectSpec:
     axial: bool               # symmetric about z: spin is meaningless and up/down is not in the geometry
     approaches_deg: tuple = (0.0, 180.0, 90.0, -90.0)  # side grasp directions, about the object's z
     grasp_heights: tuple = (0.0, 0.004, -0.004)
+    policy: str = "act_part_flip"  # the ACT export (exports/<policy>) and its dataset name
     extra: dict = field(default_factory=dict)
+
+    @property
+    def export(self) -> Path:
+        return ROOT / "exports" / self.policy
 
     @property
     def start(self) -> dict:
@@ -80,6 +85,7 @@ SOUP_CAN = ObjectSpec(
     axial=True,
     approaches_deg=tuple(float(a) for a in range(0, 360, 30)),
     grasp_heights=(0.0, 0.003),  # round the middle: the hand needs ~48 mm above the table at both ends
+    policy="act_soup_can",
 )
 
 OBJECTS = {o.name: o for o in (L_PART, SOUP_CAN)}

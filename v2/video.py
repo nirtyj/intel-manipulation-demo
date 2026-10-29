@@ -27,7 +27,9 @@ from physicalai_mujoco_plugin.compose import load_scene_model
 from physicalai_mujoco_plugin.profiles.registry import get_profile
 
 ROOT = Path(__file__).resolve().parents[1]
-SCENE = ROOT / "scenes/can_flip/scene.xml"
+from v2.objects import OBJECT  # noqa: E402
+
+SCENE = OBJECT.scene
 W, H, FPS, UPSAMPLE = 1920, 1080, 30, 3
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 FONT_B = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -148,7 +150,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=ROOT / "media/v2_flip.mp4")
     ap.add_argument("--hold", type=float, default=2.5, help="seconds to show each perception result")
     ap.add_argument("--mode", choices=["traditional", "act"], default="traditional")
-    ap.add_argument("--policy", type=Path, default=ROOT / "exports/act_part_flip", help="act mode: the export shown")
+    ap.add_argument("--policy", type=Path, default=None, help="act mode: the export shown")
     a = ap.parse_args()
     title = TITLES[a.mode]
     ep = a.episode
@@ -168,6 +170,9 @@ def main() -> None:
         by_frame.setdefault(m["frame"], []).append(m)
     stage, lines, thumb = "Start", [meta.get("task", "")], None
     if a.mode == "act":
+        if a.policy is None:
+            from v2.objects import OBJECT
+            a.policy = OBJECT.export
         cell = json.loads((a.policy / "cell.json").read_text()) if (a.policy / "cell.json").exists() else {}
         stage = "ACT policy acting"
         lines = ["Wrist + scene camera images and the joint state in, joint targets out, 10 times a second",

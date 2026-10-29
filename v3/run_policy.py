@@ -24,7 +24,7 @@ from v2.arm import HOME_DEG
 from v2.objects import OBJECT
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPORT = ROOT / "exports" / "act_part_flip"
+EXPORT = OBJECT.export
 SIM = "http://127.0.0.1:8080"
 CAMERAS = ("wrist", "overview")
 TASK = OBJECT.task
@@ -122,7 +122,10 @@ def main() -> None:
     try:
         for i in range(a.trials):
             run_v2.reset_part(rng, a.jitter, a.yaw_jitter)
-            r = {"trial": i, **run_policy_episode(cell, export_dir=a.export, ensemble=not a.no_ensemble)}
+            try:
+                r = {"trial": i, **run_policy_episode(cell, export_dir=a.export, ensemble=not a.no_ensemble)}
+            except ConnectionError as e:  # a camera stalled for seconds: score the run as failed, keep going
+                r = {"trial": i, "mode": "act", "success": False, "error": str(e)}
             if cell.recorder is not None:
                 r["episode_dir"] = str(cell.recorder.stop(r))
             print("  RESULT " + json.dumps(r), flush=True)
