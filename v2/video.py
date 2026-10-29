@@ -99,7 +99,8 @@ def compose(main: np.ndarray, wrist: np.ndarray, scene: np.ndarray, stage: str, 
     d.rectangle([1280, 960, W, H], fill=PANEL)
     d.text((1296, 975), "Simulated Intel RealSense", font=font(FONT_B, 22), fill=INK)
     d.text((1296, 1008), "D405 on the wrist (top) · D435 on a stand (middle)", font=font(FONT, 18), fill=MUTED)
-    d.text((1296, 1036), "RGB-D with a RealSense-like depth noise model", font=font(FONT, 18), fill=MUTED)
+    d.text((1296, 1036), "colour only for the policy" if title == TITLES["act"] else "RGB-D with a RealSense-like depth noise model",
+           font=font(FONT, 18), fill=MUTED)
     for (x, y, label) in ((1292, 10, "wrist D405"), (1292, 490, "scene D435")):
         d.rectangle([x - 4, y - 2, x + 128, y + 26], fill=(0, 0, 0))
         d.text((x, y), label, font=font(MONO, 18), fill=INK)

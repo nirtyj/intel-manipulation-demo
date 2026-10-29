@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import pinocchio as pin
 
-from v2.arm import CONTROL_HZ, GRIP_OPEN, HOME_DEG, V_MAX_HELD, PandaKinematics, Segment, interpolate
+from v2.arm import CONTROL_HZ, GRIP_OPEN, HOME_DEG, V_MAX, V_MAX_HELD, PandaKinematics, Segment, interpolate, polyline
 from v2.look import solve_look_pose, tcp_to_camera
 from v2.perception.sensors import fetch_rgbd
 from v2.planner import PART_BOXES, CollisionWorld, FlipPlan, plan_flip
@@ -32,6 +32,7 @@ PART_START = {"position": [0.48, 0.24, 0.055], "wxyz": [0.0, 1.0, 0.0, 0.0]}  # 
 PLACE_XY = np.array([0.48, -0.24])
 RUNS = Path(__file__).resolve().parents[1] / "runs" / "v2"
 DIAG = os.environ.get("CELL_DIAG") == "1"
+DENSE_STEP = 0.25  # rad: path steps shorter than this are points on one curve, not separate moves
 MIN_FIT = 0.93  # mean over views of (surface fit - 2 x free-space violation) before the robot acts on a pose
 # (measured: right poses score 0.95-1.00, half-turned ones 0.75-0.87)
 VIEWPOINTS = ((35.0, 0.28), (-35.0, 0.28), (0.0, 0.30))  # wrist look-at viewpoints: azimuth (deg), distance (m)
@@ -134,9 +135,24 @@ class Cell:
                 holding = step.grip < GRIP_OPEN
                 self.stream([q] * int(step.duration * CONTROL_HZ))
             elif step.kind == "path":
+                # Runs of short steps (a straight tool line solved point by point) move as one smooth curve;
+                # each long step (an RRT edge) gets its own start and stop.
+                v = V_MAX_HELD if holding else V_MAX
+                group = [q]
                 for wp in step.waypoints[1:]:
-                    traj = interpolate(self.kin, Segment(step.name, "joint", 0.8, q_goal=wp,
-                                                         v_max=V_MAX_HELD if holding else None), q)
+                    if np.max(np.abs(wp - group[-1])) > DENSE_STEP and len(group) > 1:
+                        traj = polyline(group, v)
+                        self.stream(traj)
+                        q = traj[-1]
+                        group = [q]
+                    group.append(wp)
+                    if np.max(np.abs(wp - group[-2])) > DENSE_STEP:
+                        traj = polyline(group, v)
+                        self.stream(traj)
+                        q = traj[-1]
+                        group = [q]
+                if len(group) > 1:
+                    traj = polyline(group, v)
                     self.stream(traj)
                     q = traj[-1]
             else:

@@ -217,6 +217,30 @@ def smoothstep(s: float) -> float:
     return s * s * s * (10 + s * (-15 + 6 * s))  # quintic: zero velocity and acceleration at both ends
 
 
+def polyline(waypoints: list[np.ndarray], v_max: float = V_MAX, rate: float = CONTROL_HZ,
+             min_duration: float = 0.8) -> list[np.ndarray]:
+    """Joint targets along a piecewise-linear joint path, with one smooth start and stop for the whole of it.
+
+    A dense path (a straight tool line solved as many IK points) timed waypoint by waypoint would stop at
+    each one; timed as one curve it moves through them at speed. The quintic's peak speed is 1.875x its
+    average, so the duration keeps every joint under ``v_max``.
+    """
+    pts = np.asarray(waypoints, dtype=float)
+    seg = np.max(np.abs(np.diff(pts, axis=0)), axis=1)  # per-segment largest joint travel
+    cum = np.r_[0.0, np.cumsum(seg)]
+    total = float(cum[-1])
+    if total < 1e-9:
+        return [pts[-1].copy()]
+    n = max(1, int(np.ceil(max(min_duration, 1.875 * total / v_max) * rate)))
+    out = []
+    for i in range(1, n + 1):
+        d = smoothstep(i / n) * total
+        k = min(int(np.searchsorted(cum, d, side="right")) - 1, len(seg) - 1)
+        f = 0.0 if seg[k] < 1e-12 else (d - cum[k]) / seg[k]
+        out.append(pts[k] + f * (pts[k + 1] - pts[k]))
+    return out
+
+
 def interpolate(kin: PandaKinematics, seg: Segment, q0: np.ndarray, rate: float = CONTROL_HZ) -> list[np.ndarray]:
     """Joint targets for one segment at ``rate`` Hz, starting from ``q0``."""
     n = max(1, int(seg.duration * rate))

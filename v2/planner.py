@@ -227,6 +227,61 @@ def rrt_connect(world: CollisionWorld, qa: np.ndarray, qb: np.ndarray, lo: np.nd
     return None
 
 
+MIRROR_Y = np.array([-1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0])  # Panda joints mirrored across the y = 0 plane
+
+
+def above_config(kin: PandaKinematics, world: CollisionWorld, above: pin.SE3, q_lift: np.ndarray) -> np.ndarray | None:
+    """IK for the place approach, seeded so the arm looks like the pick arm mirrored across the wall.
+
+    The pads mirror each other across y = 0; the mirrored pick configuration (plus or minus the half-turn
+    of joint 7 that sets the part upright) lands on a similar, well-conditioned arm, from which the
+    transfer is a short, repeatable move. Falls back to seeding from the pick configuration.
+    """
+    mirrored = q_lift * MIRROR_Y
+    for dq7 in (0.0, np.pi, -np.pi):
+        seed = np.clip(mirrored + np.r_[np.zeros(6), dq7], kin.lo, kin.hi)
+        q, e = kin.ik(above, seed, restarts=0)
+        margin = float(np.min(np.minimum(q - kin.lo, kin.hi - q)))
+        if e < 1e-3 and margin > 0.005 and world.free(q):
+            return q
+    return ik_free(kin, world, above, q_lift)
+
+
+def cart_path(world: CollisionWorld, kin: PandaKinematics, q0: np.ndarray, goal: pin.SE3,
+              n: int = 12) -> list[np.ndarray] | None:
+    """Configurations along a straight tool line from q0 to goal (excluding q0), all collision-free."""
+    start, q, out = kin.fk(q0), q0.copy(), []
+    for s in np.linspace(0, 1, n + 1)[1:]:
+        q, e = kin.ik(pin.SE3.Interpolate(start, goal, s), q, iters=60, restarts=0)
+        if e > 2e-3 or not world.free(q):
+            return None
+        out.append(q.copy())
+    return out
+
+
+def over_the_top(world: CollisionWorld, kin: PandaKinematics, wmap: WorldMap, q_lift: np.ndarray,
+                 q_above: np.ndarray, part_drop: float = 0.075, margin: float = 0.04) -> list[np.ndarray] | None:
+    """The same transfer every time: straight up, one joint move across at a safe height, straight down.
+
+    The height clears the tallest mapped obstacle between the two pads by the held part's reach below the
+    tool (``part_drop``) and a margin. Demonstrations recorded with it all take the same route, which a
+    learned policy can imitate; a randomised planner's routes it can only average.
+    """
+    T_lift, T_above = kin.fk(q_lift), kin.fk(q_above)
+    occ = wmap.inflated(1)
+    lo_xy = np.minimum(T_lift.translation[:2], T_above.translation[:2]) - 0.08
+    hi_xy = np.maximum(T_lift.translation[:2], T_above.translation[:2]) + 0.08
+    between = occ[np.all((occ[:, :2] > lo_xy) & (occ[:, :2] < hi_xy), axis=1)] if len(occ) else occ
+    top = float(between[:, 2].max()) if len(between) else wmap.table_z
+    z = max(T_lift.translation[2], T_above.translation[2], top + part_drop + margin)
+    rise = cart_path(world, kin, q_lift, pin.SE3(T_lift.rotation, np.r_[T_lift.translation[:2], z]))
+    # The descent, built upward from the place configuration so both ends share an arm branch.
+    descent = cart_path(world, kin, q_above, pin.SE3(T_above.rotation, np.r_[T_above.translation[:2], z]))
+    if rise is None or descent is None or not world.edge_free(rise[-1], descent[-1]):
+        return None
+    return [q_lift, *rise, *descent[::-1], q_above]
+
+
 def shortcut(world: CollisionWorld, path: list[np.ndarray], rng: np.random.Generator, tries: int = 120) -> list[np.ndarray]:
     path = list(path)
     for _ in range(tries):
@@ -345,10 +400,11 @@ def plan_flip(kin: PandaKinematics, world: CollisionWorld, wmap: WorldMap, q_now
             if abs(place.rotation[2, 2]) > 0.3:
                 continue
             above = pin.SE3(place.rotation, place.translation + np.array([0, 0, 0.12]))
-            q_above = ik_free(kin, world, above, q_lift)
+            q_above = above_config(kin, world, above, q_lift)
             if q_above is None:
                 continue
-            path_transfer = rrt_connect(world, q_lift, q_above, lo, hi, seed=1)
+            path_transfer = (over_the_top(world, kin, wmap, q_lift, q_above)
+                             or rrt_connect(world, q_lift, q_above, lo, hi, seed=1))
             if path_transfer is None:
                 continue
             world.ignore_held_vs(("table",))
@@ -372,7 +428,7 @@ def plan_flip(kin: PandaKinematics, world: CollisionWorld, wmap: WorldMap, q_now
             Step("open", "grip", grip=GRIP_OPEN, duration=0.5),
             Step("to pre-grasp", "path", waypoints=path_pre),
             Step("approach", "cart", goal=pick, duration=1.5),
-            Step("close", "grip", grip=GRIP_CLOSED, duration=1.5),  # let the grip settle before lifting
+            Step("close", "grip", grip=GRIP_CLOSED, duration=0.8),  # fingers close in ~0.3 s; keep the dwell short
             Step("lift", "cart", goal=lift, duration=1.5),
             Step("transfer and turn over", "path", waypoints=path_transfer),
             Step("lower", "cart", goal=place, duration=1.6),

@@ -21,6 +21,7 @@ def main() -> None:
     ap.add_argument("--ckpt", type=Path, required=True)
     ap.add_argument("--raw", type=Path, default=ROOT / "runs" / "dataset", help="the recorded episodes")
     ap.add_argument("--out", type=Path, default=ROOT / "exports" / "act_part_flip")
+    ap.add_argument("--demonstrations", type=int, default=None, help="how many episodes the checkpoint was trained on")
     a = ap.parse_args()
     from physicalai.policies import ACT
 
@@ -32,7 +33,7 @@ def main() -> None:
     metas = [json.loads((ep / "meta.json").read_text()) for ep in episodes(a.raw)]
     longest = max(m["frames"] / m["fps"] for m in metas)
     cell = {"fps": metas[0]["fps"], "size": metas[0]["size"], "episode_s": round(longest + 3.0, 1),
-            "demonstrations": len(metas), "checkpoint": str(a.ckpt)}
+            "demonstrations": a.demonstrations or len(metas), "checkpoint": str(a.ckpt)}
     (a.out / "cell.json").write_text(json.dumps(cell, indent=1))
     print(f"exported {a.ckpt} -> {a.out}: {cell}")
 
