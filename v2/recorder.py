@@ -22,9 +22,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from v2.objects import OBJECT
+
 SIM = "http://127.0.0.1:8080"
 CAMERAS = ("wrist", "overview")
-TASK = "Pick up the orange and blue part, turn it upright and place it on the blue pad."
+TASK = OBJECT.task
 
 
 def _frame(camera: str, size: tuple[int, int]) -> bytes | None:

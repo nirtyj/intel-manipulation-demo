@@ -83,8 +83,8 @@ def load_jpg(path: Path, size: tuple[int, int]) -> np.ndarray:
 
 
 TITLES = {
-    "traditional": "Talk to the Cell v2 · traditional manipulation · real physics, no ground truth in the loop",
-    "act": "Talk to the Cell v3 · ACT policy, trained and run on Intel Xeon · no detector, no planner",
+    "traditional": "Intel Manipulation Demo · traditional manipulation · real physics, no ground truth in the loop",
+    "act": "Intel Manipulation Demo · ACT policy, trained and run on Intel Xeon · no detector, no planner",
 }
 
 

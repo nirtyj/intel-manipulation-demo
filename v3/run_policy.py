@@ -21,12 +21,13 @@ import numpy as np
 
 from v2 import run_v2
 from v2.arm import HOME_DEG
+from v2.objects import OBJECT
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPORT = ROOT / "exports" / "act_part_flip"
 SIM = "http://127.0.0.1:8080"
 CAMERAS = ("wrist", "overview")
-TASK = "Pick up the orange and blue part, turn it upright and place it on the blue pad."
+TASK = OBJECT.task
 
 
 class _Borrowed:

@@ -14,14 +14,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from v2.objects import OBJECT, canonical_axial
 from v2.perception.detect import Detection, GroundingDino, backproject, mask_from_box
 from v2.perception.pose import SAM6DPose
 from v2.perception.sensors import RGBD, fetch_rgbd
 
 ROOT = Path(__file__).resolve().parents[2]
-PROMPT = "orange and blue block."
-OBJ_RADIUS_M = 0.09  # bounding radius of the L-shaped part (for masks)
-HALF_WIDTH_M = 0.025  # visible face to column axis, for the coarse centre
+PROMPT = OBJECT.prompt
+OBJ_RADIUS_M = OBJECT.radius_m  # bounding radius of the part (for masks)
+HALF_WIDTH_M = OBJECT.half_width_m  # visible face to the part's axis, for the coarse centre
 TABLE_Z, MIN_HEIGHT_M = 0.0, 0.03  # the cell layout's table height; anything flatter is not the part
 SUPPORT_CUT_M = 0.006             # depth points this close to the table (or a pad on it) are not the part
 MAX_SIZE_M = 0.16                  # the part is 90 x 50 x 110 mm; anything bigger is not it
@@ -38,6 +39,7 @@ class Observation:
     rmse_mm: float = 0.0
     timings_ms: dict = field(default_factory=dict)
     per_view: list = field(default_factory=list)
+    up_vote: float | None = None  # axial parts: SAM-6D's score-weighted vote for "top up" (+) vs "top down" (-)
 
 
 @dataclass
@@ -49,16 +51,17 @@ class View:
     cloud_world: np.ndarray
     hypotheses: list
     sam6d_score: float
+    hypothesis_scores: list
     ms: dict
 
 
 class PartPerception:
     def __init__(self) -> None:
         self.dino = GroundingDino()
-        self.pose = SAM6DPose(ROOT / "models/l_part.ply", ROOT / "models/l_part")
+        self.pose = SAM6DPose(OBJECT.cad_mm, OBJECT.templates)
         self.rng = np.random.default_rng(0)
         import trimesh
-        mesh = trimesh.load(ROOT / "models/l_part.ply", force="mesh")
+        mesh = trimesh.load(OBJECT.cad_mm, force="mesh")
         self.model_surface = (trimesh.sample.sample_surface(mesh, 6000)[0] / 1000.0).astype(np.float64)
 
     def detect(self, frame: RGBD) -> tuple[Detection | None, np.ndarray | None]:
@@ -107,13 +110,14 @@ class PartPerception:
         p = self.pose.estimate(frame.rgb, frame.depth, frame.K, m, d.score, hypotheses=hypotheses)
         if p is None:
             return None
-        hyps = []
-        for R, t, _ in self.pose.last_hypotheses:
+        hyps, scores = [], []
+        for R, t, s in self.pose.last_hypotheses:
             T = np.eye(4)
             T[:3, :3], T[:3, 3] = R, t
             hyps.append(frame.T_world_cam @ T)
+            scores.append(float(s))
         cloud = self.pose.last_cloud @ frame.T_world_cam[:3, :3].T + frame.T_world_cam[:3, 3]
-        return View(frame, d, m, cloud, hyps, p.score, {"dino": d.ms, "sam6d": p.ms})
+        return View(frame, d, m, cloud, hyps, p.score, scores, {"dino": d.ms, "sam6d": p.ms})
 
     def fuse(self, views: list[View]) -> Observation:
         """Pick the pose that every view agrees with.
@@ -134,6 +138,9 @@ class PartPerception:
             return obs
         T_world_obj, score, rmse = best
         obs.T_world_obj = gravity_snap(T_world_obj)
+        if OBJECT.axial:  # geometry fixes the axis; which end is up comes from SAM-6D's appearance match
+            obs.up_vote = up_vote(views)
+            obs.T_world_obj = canonical_axial(obs.T_world_obj, 1.0 if obs.up_vote >= 0 else -1.0)
         obs.score = max(v.sam6d_score for v in views)
         obs.fitness, obs.rmse_mm, obs.per_view = score, rmse * 1000, per_view
         return obs
@@ -234,6 +241,15 @@ def select_pose(views: list[View], model_m: np.ndarray, rotations: list[np.ndarr
     return best, best_views
 
 
+def up_vote(views: list[View]) -> float:
+    """Score-weighted vote of every view's SAM-6D hypotheses on which way the part's +z points.
+
+    For an axially symmetric part the depth fits both ways equally; SAM-6D's hypotheses come from matching
+    the colour templates (the can's label reads one way up), so their own scores carry the answer.
+    """
+    return float(sum(s * np.sign(T[2, 2]) for v in views for T, s in zip(v.hypotheses, v.hypothesis_scores)))
+
+
 def gravity_snap(T_world_obj: np.ndarray, max_tilt_deg: float = 20.0) -> np.ndarray:
     """A part resting on the table has its own z axis vertical: snap near-vertical estimates exactly."""
     z = T_world_obj[:3, 2]
@@ -261,7 +277,7 @@ def annotate(frame: RGBD, obs: Observation, label: str = "") -> np.ndarray:
     if obs.detection is not None:
         x1, y1, x2, y2 = np.round(obs.detection.box).astype(int)
         cv2.rectangle(img, (x1, y1), (x2, y2), (255, 210, 0), 2)
-        cv2.putText(img, f"DINO block {obs.detection.score:.2f}", (x1, max(14, y1 - 6)),
+        cv2.putText(img, f"DINO {OBJECT.label} {obs.detection.score:.2f}", (x1, max(14, y1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 210, 0), 1, cv2.LINE_AA)
     if obs.T_world_obj is not None:
         T_cam_obj = np.linalg.inv(frame.T_world_cam) @ obs.T_world_obj

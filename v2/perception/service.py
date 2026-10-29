@@ -73,6 +73,7 @@ def six_dof(hypotheses: int = 3) -> dict:
 def _pose_response(obs, t0: float, views: int) -> dict:
     return {"camera": "wrist", "views": views, "T_world_obj": to_json(obs.T_world_obj), "pose_score": round(obs.score, 3),
             "fit": round(obs.fitness, 3), "fit_rmse_mm": round(obs.rmse_mm, 2), "per_view": obs.per_view,
+            "up_vote": None if obs.up_vote is None else round(obs.up_vote, 3),
             "detection_score": None if obs.detection is None else round(obs.detection.score, 3),
             "timings_ms": {**{k: round(v) for k, v in obs.timings_ms.items()},
                            "total": round((time.perf_counter() - t0) * 1000)}}

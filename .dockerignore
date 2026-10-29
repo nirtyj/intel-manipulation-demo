@@ -1,0 +1,9 @@
+.git
+runs
+datasets
+exports
+models
+media
+docs
+events.jsonl
+**/__pycache__

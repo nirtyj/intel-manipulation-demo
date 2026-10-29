@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<!-- soup_can: a bottom-up YCB tomato soup can on a green pad, a tall wall, a blue destination pad.
+     The arm (franka_panda) is attached at robot_mount by Intel's MuJoCo plugin:
+       physicalai-mujoco start --profile franka_panda --model scenes/soup_can/scene.xml
+     World frame: x forward from the robot base, y to its left, z up; the floor plane is the tabletop. -->
+<mujoco model="soup_can">
+  <compiler angle="radian" autolimits="true"/>
+  <!-- Same solver settings as Intel's single_pick_place, tuned there for the Franka Hand's squeeze. -->
+  <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="50" impratio="10"/>
+  <visual>
+    <headlight diffuse="0.0 0.0 0.0" ambient="0.35 0.35 0.35" specular="0 0 0"/>
+    <quality shadowsize="0" offsamples="4"/>  <!-- no shadow maps: software (OSMesa) cameras render ~6x faster -->
+    <map znear="0.01" zfar="10"/>
+  </visual>
+  <default>
+    <geom condim="4"/>
+  </default>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.82 0.83 0.85" rgb2="0.55 0.56 0.58" width="512" height="3072"/>
+    <texture type="2d" name="table" builtin="flat" rgb1="0.72 0.73 0.75" width="64" height="64"/>
+    <material name="table" texture="table" specular="0.1"/>
+    <texture type="2d" name="soup_can" file="assets/soup_can.png"/>
+    <material name="soup_can" texture="soup_can" specular="0.3" shininess="0.4"/>
+    <mesh name="soup_can" file="assets/soup_can.obj"/>
+  </asset>
+  <worldbody>
+    <light pos="0.5 0.6 2.5" dir="-0.1 -0.2 -1" directional="false" cutoff="40" diffuse="0.55 0.55 0.55"/>
+    <light pos="0 0 3" dir="0 0 -1" directional="true" diffuse="0.35 0.35 0.35" castshadow="false"/>
+    <geom name="table" type="plane" size="1.2 1.0 0.01" pos="0.35 0 0" material="table" condim="3" friction="0.8 0.005 0.0001"/>
+
+    <!-- pick pad, wall, place pad -->
+    <geom name="pad_green" type="box" size="0.06 0.06 0.0015" pos="0.48 0.24 0.0015" rgba="0.15 0.75 0.30 1" contype="0" conaffinity="0"/>
+    <geom name="pad_blue" type="box" size="0.06 0.06 0.0015" pos="0.48 -0.24 0.0015" rgba="0.25 0.50 0.90 1" contype="0" conaffinity="0"/>
+    <geom name="wall" type="box" size="0.03 0.03 0.16" pos="0.50 0.0 0.16" rgba="0.55 0.55 0.58 1" friction="0.8 0.005 0.0001"/>
+
+    <!-- The YCB 005 tomato soup can (Google 16k scan, recentred): 67.8 mm across, 101.9 mm tall, 0.349 kg.
+         Collision is the cylinder; the scan is visual only. Object frame: origin at the can's middle, +z
+         through its top. It starts bottom-up on the green pad. -->
+    <body name="part" pos="0.48 0.24 0.05095" quat="0 1 0 0">
+      <joint type="free" name="part:joint" damping="0.0005" frictionloss="0" armature="0"/>
+      <geom name="part_can" type="cylinder" size="0.0339 0.05095" mass="0.349" rgba="0 0 0 0"
+            friction="1.2 0.01 0.0002" solref="0.004 1" solimp="0.95 0.99 0.001"/>
+      <geom name="part_can_vis" type="mesh" mesh="soup_can" material="soup_can" contype="0" conaffinity="0" mass="0"/>
+    </body>
+
+    <frame name="robot_mount"/>
+
+    <!-- Scene camera: an Intel RealSense D435 on a stand in front of the cell (colour stream: 42 deg vertical
+         field of view; depth aligned to colour). The wrist camera comes from the plugin's Franka Hand. -->
+    <camera name="overview" pos="1.05 0.38 0.78" xyaxes="-0.541 0.841 0.000 -0.602 -0.388 0.698" fovy="42"/>
+  </worldbody>
+</mujoco>

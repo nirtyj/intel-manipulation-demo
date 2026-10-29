@@ -1,0 +1,17 @@
+# docker compose -f docker/compose.yaml up --build      ->  http://localhost:8000
+services:
+  cell:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: intel-manip-cell
+    ports:
+      - "8000:8000"   # console + cell API
+      - "8080:8080"   # simulator API
+      - "9090:9090"   # Intel's 3D viewer (embedded in the console)
+    shm_size: "1gb"   # SharedRobot and camera frames
+    volumes:
+      - ../models:/app/models:ro                    # Grounding DINO IR, part mesh + SAM-6D templates
+      - ../exports:/app/exports:ro                  # ACT policy (OpenVINO IR)
+      - ${SAM6D_IR:-../models/sam6d_ir}:/opt/OpenVINO-SAM-6D/SAM-6D/Pose_Estimation_Model/model_save:ro
+      - ../runs:/app/runs                           # recorded episodes and results

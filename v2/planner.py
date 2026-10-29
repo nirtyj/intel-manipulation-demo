@@ -19,14 +19,12 @@ import numpy as np
 import pinocchio as pin
 from scipy.spatial import cKDTree
 
+from v2.objects import OBJECT
 from v2.arm import GRIP_CLOSED, GRIP_OPEN, HOME_DEG, PandaKinematics
 from v2.world_map import WorldMap
 
-PART_BOXES = [  # (half extents, centre) in the part frame: column and foot (scene.xml)
-    ((0.025, 0.025, 0.055), (0.0, 0.0, 0.0)),
-    ((0.02, 0.025, 0.015), (0.045, 0.0, -0.04)),
-]
-PART_UPRIGHT_Z = 0.055  # column centre above the table when it stands on its base
+PART_BOXES = OBJECT.boxes  # (half extents, centre) in the part frame (v2/objects.py)
+PART_UPRIGHT_Z = OBJECT.upright_z  # part centre above the table when it stands on its base
 
 
 # ------------------------------------------------------------------ grasp library
@@ -34,22 +32,33 @@ FREE_MOTION_PART_MARGIN = 0.015  # extra room around the part on free-space path
 
 
 def grasp_library() -> list[tuple[str, pin.SE3]]:
-    """Side grasps on the column, as tool poses in the part frame (tool z = approach, y = finger closing)."""
+    """Side grasps round the part's middle, as tool poses in the part frame (tool z = approach, y = finger
+    closing). The L-part: its four column faces. The soup can: every 30 degrees round it."""
+    legacy = {180.0: "-x", 0.0: "+x", -90.0: "-y", 90.0: "+y"}  # the L-part's grasp names
     grasps = []
-    for approach_name, approach in (("-x", np.array([1.0, 0, 0])), ("+x", np.array([-1.0, 0, 0])),
-                                    ("-y", np.array([0, 1.0, 0])), ("+y", np.array([0, -1.0, 0]))):
+    for a in OBJECT.approaches_deg:
+        side = np.array([np.cos(np.radians(a)), np.sin(np.radians(a)), 0.0])
+        approach_name = legacy[a] if not OBJECT.axial else f"{a:+.0f}"
         for roll_name, x_axis in (("up", np.array([0, 0, 1.0])), ("down", np.array([0, 0, -1.0]))):
-            z = approach                       # tool z points into the part
-            x = x_axis                         # tool x along the column
-            y = np.cross(z, x)                 # fingers close across the 50 mm column
-            # At the column's centre: turning the part over mirrors the grasp height about the centre (55 mm),
-            # and a level Panda hand needs >= 50 mm above the table, so only near-centre grasps work at both ends.
-            # The foot starts 25 mm below the centre, well clear of the fingers.
-            for h in (0.0, 0.004, -0.004):
+            z = -np.round(side, 12)            # tool z points into the part, from that side
+            x = x_axis                         # tool x along the part's axis
+            y = np.cross(z, x)                 # fingers close across the column / the can
+            # Round the centre: turning the part over mirrors the grasp height about the centre, and a level
+            # Panda hand needs >= 48 mm above the table, so only near-centre grasps work at both ends.
+            # (The L-part's foot starts 25 mm below the centre, well clear of the fingers.)
+            for h in OBJECT.grasp_heights:
                 R = np.column_stack([x, y, z])
                 grasps.append((f"approach{approach_name}-x{roll_name}-h{int(h * 1000)}",
                                pin.SE3(R, np.array([0.0, 0.0, h]))))
     return grasps
+
+
+def part_geometries(margin: float = 0.0) -> list[tuple[coal.CollisionGeometry, np.ndarray]]:
+    """The part's collision shapes (grown by ``margin``) with their centres in the part frame."""
+    if OBJECT.cylinder is not None:
+        r, half_h = OBJECT.cylinder
+        return [(coal.Cylinder(r + margin, 2 * (half_h + margin)), np.zeros(3))]
+    return [(coal.Box(*(2 * (np.array(half) + margin))), np.array(centre)) for half, centre in PART_BOXES]
 
 
 # ------------------------------------------------------------------ collision world
@@ -98,18 +107,17 @@ class CollisionWorld:
             self.obstacle_ids.setdefault(name, []).append(self._add(name, g, M))
         if part_pose is not None:
             T = pin.SE3(part_pose[:3, :3], part_pose[:3, 3])
-            for i, (half, centre) in enumerate(PART_BOXES):
-                gid = self._add(f"part_{i}", coal.Box(*(2 * (np.array(half) + part_margin))),
-                                T * pin.SE3(np.eye(3), np.array(centre)))
+            for i, (g, centre) in enumerate(part_geometries(part_margin)):
+                gid = self._add(f"part_{i}", g, T * pin.SE3(np.eye(3), centre))
                 self.obstacle_ids.setdefault("part", []).append(gid)
         self._refresh()
 
     def attach_part(self, T_tcp_part: pin.SE3) -> None:
         """The part moves with the hand: attach its boxes to joint 7. Call after set_obstacles(map, None)."""
         T_j7_tcp = self.kin.model.frames[self.kin.tcp].placement  # tcp frame, relative to joint 7
-        for i, (half, centre) in enumerate(PART_BOXES):
-            M = T_j7_tcp * T_tcp_part * pin.SE3(np.eye(3), np.array(centre))
-            self.held_ids.append(self._add(f"held_{i}", coal.Box(*(2 * np.array(half))), M, self.hand_joint))
+        for i, (g, centre) in enumerate(part_geometries()):
+            M = T_j7_tcp * T_tcp_part * pin.SE3(np.eye(3), centre)
+            self.held_ids.append(self._add(f"held_{i}", g, M, self.hand_joint))
         self._refresh()
 
     def _refresh(self) -> None:

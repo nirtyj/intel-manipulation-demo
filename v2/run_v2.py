@@ -22,13 +22,14 @@ import pinocchio as pin
 from v2.arm import CONTROL_HZ, GRIP_OPEN, HOME_DEG, V_MAX, V_MAX_HELD, PandaKinematics, Segment, interpolate, polyline
 from v2.look import solve_look_pose, tcp_to_camera
 from v2.perception.sensors import fetch_rgbd
+from v2.objects import OBJECT
 from v2.planner import PART_BOXES, CollisionWorld, FlipPlan, plan_flip
 from v2.world_map import ROBOT_MARGIN, WorldMap, robot_surface_samples
 
 SIM = "http://127.0.0.1:8080"
 PERCEPTION = "http://127.0.0.1:8100"
 ROBOT = "mujoco-franka_panda-follow"
-PART_START = {"position": [0.48, 0.24, 0.055], "wxyz": [0.0, 1.0, 0.0, 0.0]}  # upside down on the green pad
+PART_START = OBJECT.start  # upside down on the green pad
 PLACE_XY = np.array([0.48, -0.24])
 RUNS = Path(__file__).resolve().parents[1] / "runs" / "v2"
 DIAG = os.environ.get("CELL_DIAG") == "1"

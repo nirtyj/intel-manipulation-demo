@@ -1,4 +1,4 @@
-# Talk to the Cell — Intel open-stack manipulation demo
+# Intel Manipulation Demo — traditional manipulation vs a physical AI policy, on Intel's open stack
 
 A Franka Panda in Intel's MuJoCo simulator (`openvinotoolkit/physicalai`) picks up an L-shaped part that
 lies upside down on a green pad, turns it upright and places it on a blue pad on the other side of a wall.

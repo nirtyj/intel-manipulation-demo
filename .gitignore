@@ -5,3 +5,5 @@ models/*/templates/
 runs/
 datasets/
 exports/act_part_flip_r*/
+models/sam6d_ir/
+docker/certs/*.crt
