@@ -134,3 +134,21 @@ index 78643dd..be3f91c 100644
      @app.post("/conveyor/belt-speed")
      def belt_speed(request: BeltSpeedRequest) -> dict[str, Any]:
          if get_status().get("episode", {}).get("kind") != "conveyor":
+diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/scene_objects.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/scene_objects.py
+index b05713f..b879e79 100644
+--- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/scene_objects.py
++++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/scene_objects.py
+@@ -103,6 +103,13 @@ class SceneObjects:
+             self.block_addrs.append(addrs)
+             if int(model.jnt_type[joint_id]) == int(mujoco.mjtJoint.mjJNT_FREE):
+                 self.free_addrs[joint_name] = addrs
++        if not self.free_addrs:
++            # A custom --model names its own objects: report and move every free body, but leave
++            # them out of block_addrs so a reset does not scatter them over the spawn arc.
++            for joint_id in range(model.njnt):
++                if int(model.jnt_type[joint_id]) == int(mujoco.mjtJoint.mjJNT_FREE):
++                    name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id) or f"joint_{joint_id}"
++                    self.free_addrs[name] = (int(model.jnt_qposadr[joint_id]), int(model.jnt_dofadr[joint_id]))
+ 
+         target_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self.area.target_body_name)
+         self.target_body_id = int(target_id) if target_id >= 0 else None
