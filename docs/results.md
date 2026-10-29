@@ -64,30 +64,59 @@ Two simulator-side issues surfaced only because the second collection was examin
    then flagged ~10% of a correct pose, pushing it under the 0.93 bar. The pose is now read when the scene
    is captured, and perception waits for a capture newer than its request.
 
+### Third collection: the same transfer every time
+
+The transfer goes straight up to a height read from the fused map, makes one move across with the
+half-turn, and comes straight down. Dense waypoints execute as one smooth curve, and the grasp dwell is
+0.8 s.
+
+| | |
+|---|---|
+| Successful flips | **63 / 80 (79%)** |
+| Runs where the cell acted on a pose | 67. Rotation error median 0.0°, max 5.8°; position error median 0.5 mm, max 4.6 mm |
+| Perception refusals | 13 |
+| Part lost or knocked over | 3 (down from 8–9 per collection) |
+| Placement error on success | median 7.6 mm, p90 17 mm |
+| Time per run | median 83 s; planning median 1.4 s |
+
+Across all three collections, the cell acted on 190 poses, and none of them was wrong.
+
 ## v3: ACT policy (physicalai-train, Intel Xeon only)
 
-### Training on Intel Xeon
+Every policy is trained with `physicalai fit` (ACT, two 120×160 camera inputs, 2 s action chunks) in bf16
+on AWS c7i Xeon Platinum 8488C boxes (AMX), and exported to OpenVINO. In the cell it runs through
+physicalai's `RobotRuntime` + `PolicySource(InferenceModel)` at 10 Hz, with ACT's temporal ensembling as a
+chunk smoother. It is scored by the simulator afterwards.
 
-| Run | Data | Hardware | Steps | Time | Final loss |
-|---|---|---|---|---|---|
-| Round 1 | 25 demos, 7,536 frames | AWS c7i.4xlarge, Xeon Platinum 8488C (AMX), bf16 | 8,935 (batch 32) | 80 min | 0.063 |
-| Round 2 | 52 demos, 15,179 frames | same | (running) | | |
+| Round | Demonstrations | Training | In the cell | What it does |
+|---|---|---|---|---|
+| 1 | 25, cameras ~1 fps, RRT transfers | 8.9k steps, 39 epochs, 16 vCPU, 80 min | 1/11 | reaches the part, closes on air |
+| 3a | 27, cameras 11 fps, RRT transfers | 11.6k steps, 36 epochs, 2 h | 1/6, then 1/1 from the console | grasps; then stalls or wanders in the transfer |
+| 3b | 53, cameras 11 fps, RRT transfers | 11.2k steps, 18 epochs, 8 vCPU, 3 h | 0/6 | hovers at the pre-grasp |
+| 4a | 30, cameras 11 fps, same transfer every time | (running) | | |
+| 4b | 63, cameras 11 fps, same transfer every time | (running) | | |
 
-Step time on a 4-vCPU Xeon slice, with the simulator paused: batch 8 takes 0.50 s in fp32 and 0.45 s in
-bf16 (AMX); batch 32 takes 1.6 s in fp32 and 1.3 s in bf16. With the simulator running, its software camera
-rendering took all four cores and steps were 10–18× slower. The training box has no simulator on it.
+Open-loop check (round 3b on its own training episodes, frames fed exactly as the runtime feeds them):
 
-### Deployment
+- The first predicted action is within 1.5° per joint of the demonstration on average (max 9°).
+- Blanking the images moves the output by 9°.
 
-The exported OpenVINO model takes 11–14 ms per inference on CPU. It runs through physicalai's
-`RobotRuntime` + `PolicySource` at 10 Hz.
+So the export and the runtime pipeline match training, and the policy uses vision. What fails is closed-loop
+precision: 1.5° at the shoulder is about 1.5 cm at the fingers, against 15 mm of clearance around the
+column.
 
-Round 1: 1 successful flip out of 3, then 0 out of 8 in later runs, with and without temporal ensembling.
-The policy reaches the part but its final approach is imprecise: the fingers clip the part and close on
-air, and since no demonstration ever missed a grasp, it does not recover.
+What moved the policy, in order:
 
-Root cause found while rendering the replay video: the simulator's cameras updated about once a second
-during the runs. The scene's 8192-px shadow maps cost ~500 ms per 640×480 frame in software rendering, so
-the training images lagged the joint states by up to seconds. With shadows off, both cameras run at ~11 fps
-(v2 perception is unaffected: 2/2 flips, 0.4 mm pose error). The dataset is being re-recorded and the policy
-retrained on it.
+1. **Fresh camera images.** Round 1 trained on images that lagged the joints by up to seconds and grasped
+   air. With 11 fps cameras, round 3a closes on the part.
+2. **Consistent demonstrations.** Round 3a grasped, then stalled or wandered, because the RRT transfers took
+   a new route every run and the policy averaged them. Rounds 4a and 4b test the fixed route.
+3. **Epochs over data.** Round 3b had twice the data but half the epochs, and it did worse than 3a.
+
+### Deployment speed
+
+The exported OpenVINO model takes 11–14 ms per inference on CPU.
+
+The simulator renders its cameras in software, so an MJPEG reader blocked each tick and gave ~1 Hz control.
+`v3/sim_camera.py` is a physicalai `Camera` on the latest frame, prepared the way the recorder prepared
+it, which gives 10 Hz control.
