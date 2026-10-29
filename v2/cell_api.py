@@ -121,8 +121,9 @@ def run(body: RunBody) -> dict:
 def reset() -> dict:
     if _state["busy"]:
         raise HTTPException(409, "A run is in progress")
-    run_v2.reset_part(None, 0.0, 0.0)
-    emit("reset")
+    # Same randomisation as the demonstrations: up to 2 cm and 30 degrees, never shown to either mode.
+    dx, dy, yaw = run_v2.reset_part(np.random.default_rng(), 0.02, 30.0)
+    emit("reset", dx_mm=round(dx * 1000), dy_mm=round(dy * 1000), yaw_deg=round(yaw))
     return {"ok": True}
 
 

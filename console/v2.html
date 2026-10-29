@@ -151,7 +151,7 @@ const $ = s => document.querySelector(s);
 let mode = "traditional", busy = false;
 const RAILS = {
   traditional: [["scene_detect", "Detect"], ["six_dof", "6-DoF pose"], ["map", "Fuse map"], ["plan", "Plan"], ["execute", "Execute"], ["done", "Done"]],
-  act: [["observe", "Observe"], ["policy", "ACT policy"], ["execute", "Execute"], ["done", "Done"]],
+  act: [["policy_load", "Load policy"], ["policy_run", "ACT at 10 Hz"], ["done", "Done"]],
 };
 const reached = new Set();
 function renderRail() {
@@ -188,7 +188,8 @@ function renderStats(stats) {
 }
 const STAGE_TEXT = { scene_detect: "Finding the part with the scene camera", six_dof: "Estimating its 6-DoF pose with the wrist camera",
   six_dof_retry: "Low fit: looking again from another side", map: "Fusing depth into an obstacle map", plan: "Planning grasp, IK and a collision-free path",
-  execute: "Executing", observe: "Policy observing cameras and joints", policy: "ACT policy acting" };
+  execute: "Executing", wrist_view: "Wrist camera: one more viewpoint for SAM-6D",
+  policy_load: "Loading the ACT policy (OpenVINO, CPU)", policy_run: "ACT policy acting: cameras + joints in, joint targets out" };
 const log = [];
 function handle(ev) {
   const p = ev.payload || {};
@@ -202,17 +203,19 @@ function handle(ev) {
     if (p.state === "error") { busy = false; banner("Error: " + p.error, "bad"); }
   }
   if (ev.type === "stage") {
-    const st = p.stage; const key = st === "six_dof_retry" ? "six_dof" : st;
+    const st = p.stage; const key = st === "six_dof_retry" || st === "wrist_view" ? "six_dof" : st;
     if (st === "execute") reached.add("plan");
     reached.add(key === "execute" ? "execute" : key);
     if (STAGE_TEXT[st]) banner(STAGE_TEXT[st] + (p.step ? `: ${String(p.step).replace(/_/g, " ")}` : ""), mode === "act" ? "ai" : "");
     if (st === "scene_detect") { refreshImg("overview"); setKV("scene DINO", `${p.score} · ${(p.ms / 1000).toFixed(1)} s`); }
-    if (st.startsWith("six_dof")) { refreshImg("wrist"); setKV("SAM-6D", `score ${p.score} · fit ${p.fit} · ${(p.ms / 1000).toFixed(1)} s`); }
+    if (st === "wrist_view") setKV("wrist views", `azimuth ${p.azimuth}° · SAM-6D ${p.sam6d ?? "–"} · ${((p.ms || 0) / 1000).toFixed(1)} s`);
+    if (st === "six_dof") { refreshImg("wrist"); setKV("6-DoF pose", `${p.views} views agree · fit ${p.fit} · ${(p.ms / 1000).toFixed(1)} s`); }
     if (st === "map") setKV("fused map", `${p.voxels} voxels · table z ${p.table_z} m`);
     if (st === "plan") setKV("plan", p.ok === false ? `no feasible grasp` : `${p.grasp} · ${p.ms} ms · clearance ${p.clearance_mm} mm`);
-    if (st === "policy") setKV("policy", `${p.steps || ""} steps · ${p.ms_per_step || ""} ms/step`);
+    if (st === "policy_run") setKV("policy", `ACT · ${p.fps} Hz for ${p.seconds} s · OpenVINO CPU`);
+    if (st === "policy_done") { reached.add("policy_run"); setKV("policy result", p.success ? `upright, ${p.on_pad_mm} mm off centre` : "not placed upright"); }
   }
-  if (ev.type === "reset") { reached.clear(); banner("Part reset upside down on the green pad."); }
+  if (ev.type === "reset") { reached.clear(); banner(`Part reset upside down on the green pad (moved ${p.dx_mm ?? 0}, ${p.dy_mm ?? 0} mm, turned ${p.yaw_deg ?? 0}°).`); }
   $("#runBtn").disabled = busy; $("#resetBtn").disabled = busy;
   renderRail();
 }

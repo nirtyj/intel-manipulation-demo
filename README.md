@@ -74,7 +74,7 @@ uvicorn v2.cell_api:app --port 8000      # http://localhost:8000
 
 ## Results
 
-Filled in from the measured runs: see `docs/results.md`.
+See [docs/results.md](docs/results.md): every number measured, every fix traced to a logged failure. Demo video of v2: `media/v2_traditional_flip.mp4`.
 
 ## Layout
 

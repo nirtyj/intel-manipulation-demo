@@ -52,16 +52,20 @@ def truth() -> np.ndarray:
     return T
 
 
-def reset_part(rng: np.random.Generator | None, jitter: float, yaw_jitter_deg: float) -> None:
+def reset_part(rng: np.random.Generator | None, jitter: float, yaw_jitter_deg: float) -> tuple[float, float, float]:
+    """Put the part back upside down on the green pad, offset at random; returns (dx m, dy m, yaw deg)."""
     pose = json.loads(json.dumps(PART_START))
+    dx = dy = yaw_deg = 0.0
     if rng is not None:
-        pose["position"][0] += rng.uniform(-jitter, jitter)
-        pose["position"][1] += rng.uniform(-jitter, jitter)
-        yaw = np.radians(rng.uniform(-yaw_jitter_deg, yaw_jitter_deg))
-        q = pin.Quaternion(pin.utils.rotate("z", yaw) @ pin.Quaternion(0.0, 1.0, 0.0, 0.0).toRotationMatrix())
+        dx, dy = rng.uniform(-jitter, jitter), rng.uniform(-jitter, jitter)
+        yaw_deg = rng.uniform(-yaw_jitter_deg, yaw_jitter_deg)
+        pose["position"][0] += dx
+        pose["position"][1] += dy
+        q = pin.Quaternion(pin.utils.rotate("z", np.radians(yaw_deg)) @ pin.Quaternion(0.0, 1.0, 0.0, 0.0).toRotationMatrix())
         pose["wxyz"] = [q.w, q.x, q.y, q.z]
     post(SIM + "/objects/part:joint/pose", pose)
     time.sleep(1.2)
+    return dx, dy, yaw_deg
 
 
 @dataclass
