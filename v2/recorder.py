@@ -58,14 +58,17 @@ class EpisodeRecorder:
         n = len([p for p in self.root.glob("episode_*") if p.is_dir()])
         return self.root / f"episode_{n:06d}"
 
-    def start(self, robot, get_action) -> None:
+    def start(self, robot, get_action, paused: bool = False) -> None:
         self.dir = self._next_dir()
         for cam in CAMERAS:
             (self.dir / cam).mkdir(parents=True, exist_ok=True)
         self.state, self.action, self.stamp = [], [], []
         self.viz_part, self.marks = [], []  # for the replay video only; never part of the training data
         self._stop.clear()
-        self._paused.clear()
+        if paused:
+            self._paused.set()
+        else:
+            self._paused.clear()
         self._thread = threading.Thread(target=self._run, args=(robot, get_action), daemon=True)
         self._thread.start()
 

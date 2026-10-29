@@ -23,6 +23,7 @@ PROMPT = "orange and blue block."
 OBJ_RADIUS_M = 0.09  # bounding radius of the L-shaped part (for masks)
 HALF_WIDTH_M = 0.025  # visible face to column axis, for the coarse centre
 TABLE_Z, MIN_HEIGHT_M = 0.0, 0.03  # the cell layout's table height; anything flatter is not the part
+SUPPORT_CUT_M = 0.006             # depth points this close to the table (or a pad on it) are not the part
 MAX_SIZE_M = 0.16                  # the part is 90 x 50 x 110 mm; anything bigger is not it
 
 
@@ -72,6 +73,12 @@ class PartPerception:
                 continue
             v, u = np.nonzero(m)
             pts = backproject(frame.depth, frame.K, v, u) @ frame.T_world_cam[:3, :3].T + frame.T_world_cam[:3, 3]
+            # The box's RANSAC plane cut misses the table when the part fills the box; cut by height too.
+            on_table = pts[:, 2] < TABLE_Z + SUPPORT_CUT_M
+            m[v[on_table], u[on_table]] = False
+            pts = pts[~on_table]
+            if len(pts) < 20:
+                continue
             height = np.percentile(pts[:, 2], 95) - TABLE_Z
             spread = np.percentile(pts[:, :2], 95, axis=0) - np.percentile(pts[:, :2], 5, axis=0)
             if MIN_HEIGHT_M < height < MAX_SIZE_M and np.all(spread < MAX_SIZE_M):  # part-sized, not a pad or the wall

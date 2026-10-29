@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 import urllib.request
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ import pinocchio as pin
 from v2.arm import CONTROL_HZ, GRIP_OPEN, HOME_DEG, PandaKinematics, Segment, interpolate
 from v2.look import solve_look_pose, tcp_to_camera
 from v2.perception.sensors import fetch_rgbd
-from v2.planner import CollisionWorld, FlipPlan, plan_flip
+from v2.planner import PART_BOXES, CollisionWorld, FlipPlan, plan_flip
 from v2.world_map import WorldMap, robot_surface_samples
 
 SIM = "http://127.0.0.1:8080"
@@ -30,6 +31,7 @@ ROBOT = "mujoco-franka_panda-follow"
 PART_START = {"position": [0.48, 0.24, 0.055], "wxyz": [0.0, 1.0, 0.0, 0.0]}  # upside down on the green pad
 PLACE_XY = np.array([0.48, -0.24])
 RUNS = Path(__file__).resolve().parents[1] / "runs" / "v2"
+DIAG = os.environ.get("CELL_DIAG") == "1"
 MIN_FIT = 0.7  # mean over views of (surface fit - 2 x free-space violation) before the robot acts on a pose
 VIEWPOINTS = ((35.0, 0.28), (-35.0, 0.28), (0.0, 0.30))  # wrist look-at viewpoints: azimuth (deg), distance (m)
 
@@ -77,6 +79,8 @@ class Cell:
         self.grip = GRIP_OPEN
         self.last_action: np.ndarray | None = None  # what the recorder logs as the action
         self.recorder = None
+        self.record_mode = "policy"  # "policy": record only the flip, from home; "full": also the look-around
+        self._perceiving = False
 
     def q(self) -> np.ndarray:
         return np.radians(np.asarray(self.robot.get_observation().joint_positions, float)[:7])
@@ -111,7 +115,7 @@ class Cell:
             self.recorder.pause()
 
     def resume_recording(self) -> None:
-        if self.recorder is not None:
+        if self.recorder is not None and not (self._perceiving and self.record_mode == "policy"):
             self.recorder.resume()
 
     def execute(self, plan: FlipPlan, trial: Trial) -> None:
@@ -131,7 +135,16 @@ class Cell:
                 traj = interpolate(self.kin, Segment(step.name, "cart", step.duration, goal=step.goal), q)
                 self.stream(traj)
                 q = traj[-1]
-            trial.log("execute", step=step.name.replace(" ", "_"), ms=round((time.perf_counter() - t0) * 1000))
+            extra = {}
+            if DIAG:  # diagnostics only: where the part really is after each step (never used for control)
+                gt = truth()
+                q_meas = self.q()
+                tcp = self.kin.fk(q_meas)
+                rel = tcp.inverse() * pin.SE3(gt[:3, :3], gt[:3, 3])
+                extra = {"diag_part_xyz": np.round(gt[:3, 3], 3).tolist(), "diag_part_up": round(float(gt[2, 2]), 2),
+                         "diag_part_in_tcp_mm": np.round(rel.translation * 1000, 1).tolist(),
+                         "diag_cmd_vs_meas_mm": round(float(np.linalg.norm(self.kin.fk(q).translation - tcp.translation) * 1000), 1)}
+            trial.log("execute", step=step.name.replace(" ", "_"), ms=round((time.perf_counter() - t0) * 1000), **extra)
 
 
 def perceive(cell: Cell, trial: Trial, wmap: WorldMap) -> np.ndarray | None:
@@ -180,7 +193,8 @@ def perceive(cell: Cell, trial: Trial, wmap: WorldMap) -> np.ndarray | None:
     if r is None or r["T_world_obj"] is None or r["fit"] < MIN_FIT:
         return None  # the views do not agree on a pose: never guess
     T = np.array(r["T_world_obj"])
-    trial.log("map", voxels=len(wmap.counts), table_z=round(float(wmap.table_z), 4), frames=wmap.frames)
+    cut = wmap.cut_object(T, PART_BOXES)
+    trial.log("map", voxels=len(wmap.counts), cut=cut, table_z=round(float(wmap.table_z), 4), frames=wmap.frames)
     return T
 
 
@@ -193,9 +207,13 @@ def flip(cell: Cell, trial: Trial) -> dict:
     """One flip from wherever the part is: perceive, map, plan, execute, score."""
     t_start = time.perf_counter()
     if cell.recorder is not None:
-        cell.recorder.start(cell.robot, lambda: cell.last_action)
+        cell.recorder.start(cell.robot, lambda: cell.last_action, paused=cell.record_mode == "policy")
     wmap = WorldMap()
-    T = perceive(cell, trial, wmap)
+    cell._perceiving = True
+    try:
+        T = perceive(cell, trial, wmap)
+    finally:
+        cell._perceiving = False
     result = {"success": False}
     gt0 = truth()
     if T is None:
@@ -203,8 +221,11 @@ def flip(cell: Cell, trial: Trial) -> dict:
         return {**result, "events": trial.events}
     result["pose_error_mm"] = round(1000 * float(np.linalg.norm(T[:3, 3] - gt0[:3, 3])), 1)
     result["pose_error_deg"] = round(float(np.degrees(np.arccos(np.clip((np.trace(T[:3, :3].T @ gt0[:3, :3]) - 1) / 2, -1, 1)))), 1)
-    np.savez(RUNS / "last_planning_input.npz", T=T, occupied=wmap.occupied(), table_z=wmap.table_z, q=cell.q(),
+    np.savez(RUNS / f"planning_input_{int(time.time())}.npz", T=T, occupied=wmap.occupied(), table_z=wmap.table_z, q=cell.q(),
              counts_keys=np.array(list(wmap.counts.keys())), counts_vals=np.array(list(wmap.counts.values())))
+    if cell.recorder is not None and cell.record_mode == "policy":
+        # Training episodes start at home: the policy learns the flip from its cameras, not the look-around.
+        cell.move_to(np.radians(HOME_DEG), duration=2.0)
     try:
         plan = plan_flip(cell.kin, cell.world, wmap, cell.q(), T, PLACE_XY)
     except RuntimeError as exc:
@@ -240,6 +261,8 @@ def main() -> None:
     ap.add_argument("--yaw-jitter", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--record", type=Path, default=None, help="record episodes for policy training into this folder")
+    ap.add_argument("--record-mode", choices=["policy", "full"], default="policy",
+                    help="policy: only the flip, from home (training data); full: the whole run (replay video)")
     args = ap.parse_args()
     from physicalai.robot.transport import SharedRobot
 
@@ -251,6 +274,7 @@ def main() -> None:
     if args.record is not None:
         from v2.recorder import EpisodeRecorder
         cell.recorder = EpisodeRecorder(args.record)
+        cell.record_mode = args.record_mode
     rng = np.random.default_rng(args.seed) if (args.jitter or args.yaw_jitter) else None
     results = []
     try:

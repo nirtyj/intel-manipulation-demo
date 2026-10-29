@@ -63,7 +63,20 @@ class CollisionWorld:
         self.kin = kin
         self.n_robot = self.robot_geom.ngeoms
         self.hand_joint = self.model.getJointId("joint7")
+        self.self_pairs = self._self_pairs()
         self.reset()
+
+    def _self_pairs(self) -> list[tuple[int, int]]:
+        """Robot link pairs that can meet: two or more joints apart and clear of each other at home."""
+        geoms = self.robot_geom.geometryObjects
+        cand = [(a, b) for a in range(self.n_robot) for b in range(a + 1, self.n_robot)
+                if abs(int(geoms[a].parentJoint) - int(geoms[b].parentJoint)) >= 2]
+        g = self.robot_geom.copy()
+        for a, b in cand:
+            g.addCollisionPair(pin.CollisionPair(a, b))
+        gd = pin.GeometryData(g)
+        pin.computeCollisions(self.model, self.data, g, gd, np.radians(HOME_DEG), False)
+        return [pair for k, pair in enumerate(cand) if not gd.collisionResults[k].isCollision()]
 
     def reset(self) -> None:
         self.geom = self.robot_geom.copy()
@@ -105,6 +118,12 @@ class CollisionWorld:
                 if name_m.startswith("link0"):
                     continue  # the base is bolted to the table: whatever is there is the robot itself
                 self.geom.addCollisionPair(pin.CollisionPair(m, o))
+        for a, b in self.self_pairs:  # the arm against itself
+            self.geom.addCollisionPair(pin.CollisionPair(a, b))
+        arm = [i for i in range(self.n_robot) if int(self.geom.geometryObjects[i].parentJoint) <= 5]
+        for h in self.held_ids:  # the held part against the arm (the hand and wrist hold it, so not those)
+            for i in arm:
+                self.geom.addCollisionPair(pin.CollisionPair(i, h))
         self.gdata = pin.GeometryData(self.geom)
         self._ignore: set[int] = set()
 
@@ -125,6 +144,15 @@ class CollisionWorld:
 
     def free(self, q: np.ndarray) -> bool:
         return not pin.computeCollisions(self.model, self.data, self.geom, self.gdata, q, True)
+
+    def blocking(self, q: np.ndarray) -> list[str]:
+        """Names of the colliding (robot, obstacle) pairs at q, for logs."""
+        pin.computeCollisions(self.model, self.data, self.geom, self.gdata, q, False)
+        out = []
+        for k, cp in enumerate(self.geom.collisionPairs):
+            if self.gdata.activeCollisionPairs[k] and self.gdata.collisionResults[k].isCollision():
+                out.append(f"{self.geom.geometryObjects[cp.first].name}~{self.geom.geometryObjects[cp.second].name}")
+        return out
 
     def edge_free(self, qa: np.ndarray, qb: np.ndarray, res: float = 0.03) -> bool:
         n = max(2, int(np.ceil(np.max(np.abs(qb - qa)) / res)))
@@ -226,13 +254,20 @@ class FlipPlan:
     notes: list[str] = field(default_factory=list)
 
 
-def cart_free(world: CollisionWorld, kin: PandaKinematics, q0: np.ndarray, goal: pin.SE3, n: int = 20):
-    """Solve a straight tool line and check it; returns the end configuration or None."""
+def cart_free(world: CollisionWorld, kin: PandaKinematics, q0: np.ndarray, goal: pin.SE3, n: int = 20,
+              why: list | None = None):
+    """Solve a straight tool line and check it; returns the end configuration or None (reason in ``why``)."""
     start = kin.fk(q0)
     q = q0.copy()
     for s in np.linspace(0, 1, n + 1)[1:]:
         q, e = kin.ik(pin.SE3.Interpolate(start, goal, s), q, iters=60, restarts=0)
-        if e > 2e-3 or not world.free(q):
+        if e > 2e-3:
+            if why is not None:
+                why.append(f"IK at {s:.2f}")
+            return None
+        if not world.free(q):
+            if why is not None:
+                why.append(f"at {s:.2f}: " + ",".join(sorted(set(world.blocking(q)))[:3]))
             return None
     return q
 
@@ -282,16 +317,18 @@ def plan_flip(kin: PandaKinematics, world: CollisionWorld, wmap: WorldMap, q_now
         path_pre = rrt_connect(world, q_now, q_pre, lo, hi)
         if path_pre is None:
             tried.append(f"{name}: no free path to pre-grasp"); continue
-        q_grasp = cart_free(world, kin, q_pre, pick)  # the part stays an obstacle: open fingers straddle the column
+        why = []
+        q_grasp = cart_free(world, kin, q_pre, pick, why=why)  # the part stays an obstacle: open fingers straddle the column
         if q_grasp is None:
-            tried.append(f"{name}: approach blocked"); continue
+            tried.append(f"{name}: approach blocked ({why[0] if why else ''})"); continue
         world.set_obstacles(wmap, None)
         world.attach_part(g.inverse())
         world.ignore_held_vs(("table",))
         lift = pin.SE3(pick.rotation, pick.translation + np.array([0, 0, 0.12]))
-        q_lift = cart_free(world, kin, q_grasp, lift)
+        why = []
+        q_lift = cart_free(world, kin, q_grasp, lift, why=why)
         if q_lift is None:
-            tried.append(f"{name}: lift blocked"); continue
+            tried.append(f"{name}: lift blocked ({why[0] if why else ''})"); continue
         world.set_obstacles(wmap, None)
         world.attach_part(g.inverse())
         placed = None

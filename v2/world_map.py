@@ -99,6 +99,25 @@ class WorldMap:
         self.frames += 1
         return int((n >= MIN_HITS).sum())
 
+    def cut_object(self, T_world_obj: np.ndarray, boxes: list, margin: float = 0.02) -> int:
+        """Remove the voxels the known object occupies (its boxes at its estimated pose, grown by ``margin``).
+
+        The planner models the object itself exactly; its depth points in the map would only block the
+        fingers from reaching it. Returns how many voxels were removed.
+        """
+        if not self.counts:
+            return 0
+        keys = list(self.counts.keys())
+        centres = (np.array(keys) + 0.5) * VOXEL
+        local = (centres - T_world_obj[:3, 3]) @ T_world_obj[:3, :3]
+        inside = np.zeros(len(keys), bool)
+        for half, centre in boxes:
+            inside |= np.all(np.abs(local - np.array(centre)) <= np.array(half) + margin + 0.5 * VOXEL, axis=1)
+        for k, hit in zip(keys, inside):
+            if hit:
+                del self.counts[k]
+        return int(inside.sum())
+
     def occupied(self) -> np.ndarray:
         if not self.counts:
             return np.zeros((0, 3))
