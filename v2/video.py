@@ -199,14 +199,14 @@ def main() -> None:
             for cam, fname in m["images"].items():
                 img = np.asarray(Image.open(ep / "marks" / fname).convert("RGB"))
                 thumb = img
-                title = "Grounding DINO + depth mask" if cam == "overview" else "Grounding DINO + SAM-6D 6-DoF"
+                heading = "Grounding DINO + depth mask" if cam == "overview" else "Grounding DINO + SAM-6D 6-DoF"
                 ms = info.get("ms") or info.get("total")
                 caption = f"{(ms or 0) / 1000:.1f} s on CPU, shown in {a.hold:.1f} s"
                 main = rep.render(state[i], viz[i])
                 wrist = load_jpg(ep / "wrist" / f"{i:06d}.jpg", (640, 480))
                 scene = load_jpg(ep / "overview" / f"{i:06d}.jpg", (640, 480))
-                frame = compose(main, wrist, scene, stage, lines, thumb, (img, title, caption), f"t={i / 10:5.1f}s",
-                                title=TITLES[a.mode])
+                frame = compose(main, wrist, scene, stage, lines, thumb, (img, heading, caption), f"t={i / 10:5.1f}s",
+                                title=title)
                 for _ in range(int(a.hold * FPS)):
                     ff.stdin.write(frame.tobytes())
                     written += 1
