@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from v2 import run_v2
+from v2.objects import OBJECT
 from v2.arm import PandaKinematics
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -154,7 +155,8 @@ async def events(ws: WebSocket) -> None:
     q: asyncio.Queue = asyncio.Queue()
     _clients.add(q)
     try:
-        await ws.send_json({"type": "hello", "payload": {"busy": _state["busy"], "stats": _state["stats"]}})
+        await ws.send_json({"type": "hello", "payload": {"busy": _state["busy"], "stats": _state["stats"],
+                                                         "object": OBJECT.title}})
         while True:
             await ws.send_json(await q.get())
     except WebSocketDisconnect:

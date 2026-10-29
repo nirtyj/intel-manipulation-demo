@@ -85,7 +85,7 @@ td.num { font-family: var(--mono); }
 <body>
 <div class="app">
   <header class="top">
-    <div><div class="name">Intel Manipulation Demo</div><div class="sub">traditional manipulation · physical AI policy (ACT) · one cell</div></div>
+    <div><div class="name">Intel Manipulation Demo</div><div class="sub" id="sub">traditional manipulation · physical AI policy (ACT) · one cell</div></div>
     <div class="meta">
       <span class="tag"><b>Franka Panda</b> in Intel's MuJoCo plugin · real physics</span>
       <span class="tag"><b>OpenVINO 2026.4</b> Grounding DINO + SAM-6D</span>
@@ -194,7 +194,10 @@ const log = [];
 function handle(ev) {
   const p = ev.payload || {};
   log.unshift(JSON.stringify(ev)); if (log.length > 150) log.pop(); $("#log").textContent = log.join("\n");
-  if (ev.type === "hello") { busy = p.busy; renderStats(p.stats || {}); }
+  if (ev.type === "hello") {
+    busy = p.busy; renderStats(p.stats || {});
+    if (p.object) $("#sub").textContent = `${p.object} · traditional manipulation · physical AI policy (ACT)`;
+  }
   if (ev.type === "run") {
     if (p.state === "started") { busy = true; reached.clear(); banner(p.mode === "act" ? "ACT policy running" : "Traditional pipeline running", p.mode === "act" ? "ai" : ""); }
     if (p.state === "done") { busy = false; reached.add("done"); const r = p.result || {}; renderStats(p.stats || {});

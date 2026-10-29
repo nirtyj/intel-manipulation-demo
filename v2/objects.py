@@ -26,6 +26,7 @@ class ObjectSpec:
     scene: Path
     prompt: str               # Grounding DINO text prompt
     label: str                # short name on annotated images
+    title: str                # the object's name in the console
     task: str                 # the instruction recorded with each episode
     cad_mm: Path              # SAM-6D model, millimetres, object frame
     templates: Path           # SAM-6D templates rendered from cad_mm
@@ -55,6 +56,7 @@ L_PART = ObjectSpec(
     scene=ROOT / "scenes/can_flip/scene.xml",
     prompt="orange and blue block.",
     label="block",
+    title="L-part (asymmetric)",
     task="Pick up the orange and blue part, turn it upright and place it on the blue pad.",
     cad_mm=ROOT / "models/l_part.ply",
     templates=ROOT / "models/l_part",
@@ -74,6 +76,7 @@ SOUP_CAN = ObjectSpec(
     scene=ROOT / "scenes/soup_can/scene.xml",
     prompt="red and white soup can.",
     label="soup can",
+    title="YCB tomato soup can",
     task="Pick up the tomato soup can, turn it upright and place it on the blue pad.",
     cad_mm=ROOT / "models/soup_can/soup_can.obj",
     templates=ROOT / "models/soup_can",
