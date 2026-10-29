@@ -32,13 +32,20 @@ read after a run, to score it, and in opt-in diagnostics (`CELL_DIAG=1`).
 4. **Map.** Scene and wrist depth fused into 15 mm voxels; the robot's own body filtered out by its
    collision meshes; the part cut out at its estimated pose (the planner models it exactly); the robot's
    current body carved free before planning.
-5. **Plan.** Side grasps at the column's centre (turning the part over mirrors the grasp height, and the
-   hand needs 50 mm above the table at both ends); collision-free IK, RRT-Connect + shortcutting,
-   straight-line approach / lift / lower. Checks: robot vs map and table, robot vs itself, the held part vs
-   the map and the arm; 15 mm extra room around the part on free-space paths; the placed part is an
-   obstacle on the way home.
-6. **Execute and record.** 50 Hz joint targets through `SharedRobot`; at 10 Hz the recorder stores joint
-   state, the commanded action and both camera frames.
+5. **Plan.**
+   - Side grasps at the column's centre. Turning the part over mirrors the grasp height, and the hand
+     needs 50 mm above the table at both ends.
+   - Collision-free IK and straight-line approach, lift and lower.
+   - The transfer is the same every time: straight up to a height read from the fused map, one move
+     across with the half-turn, straight down. The place configuration is seeded with the pick arm mirrored
+     across the wall. RRT-Connect is the fallback, because a randomised route each run is something a
+     learned policy can only average.
+   - Collision checks: robot against the map and table, robot against itself, and the held part against
+     the map and the arm. Free-space paths keep 15 mm extra room around the part, and the placed part
+     stays an obstacle on the way home.
+6. **Execute and record.** Joint targets stream at 50 Hz through `SharedRobot`. Dense waypoint runs move
+   as one smooth curve, and joint speed is capped at 0.5 rad/s while the part is held. At 10 Hz the
+   recorder stores the joint state, the commanded action and both camera frames.
 
 ## The policy (v3)
 
