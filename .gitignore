@@ -7,3 +7,6 @@ datasets/
 exports/act_part_flip_r*/
 models/sam6d_ir/
 docker/certs/*.crt
+train/aws/user-data-*.sh
+train/aws/s3.json
+train/aws/instance_id*
