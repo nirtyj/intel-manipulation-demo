@@ -16,6 +16,18 @@ The same cell runs it two ways, and the console switches between them:
 No step reads the simulator's object state. The part's pose comes only from RGB-D; the simulator pose is
 read after a run, to score it, and in opt-in diagnostics (`CELL_DIAG=1`).
 
+**Two objects** (`CELL_OBJECT`, defined in `v2/objects.py`):
+
+- `l_part` (default): the asymmetric L-part. Geometry alone fixes its 6-DoF pose.
+- `soup_can`: the YCB 005 tomato soup can (Google 16k scan), bottom-up on the pad, grasped round the
+  middle as in the Isaac reference cell.
+  - Depth fixes its position and axis but not which end is up. SAM-6D's match always said "top up".
+  - Which end is up is settled by render-and-compare (`v2/perception/appearance.py`): the textured scan
+    is rendered both ways up at every 10° of spin, and correlated with the wrist images.
+
+**Docker:** `docker compose -f docker/compose.yaml up --build` runs everything in one CPU-only image; see
+[docker/README.md](docker/README.md).
+
 ## The pipeline (v2)
 
 1. **Scene camera → coarse location.** Grounding DINO tiny (OpenVINO IR, `"orange and blue block."`) finds
