@@ -210,7 +210,7 @@ function handle(ev) {
     if (st === "scene_detect") { refreshImg("overview"); setKV("scene DINO", `${p.score} · ${(p.ms / 1000).toFixed(1)} s`); }
     if (st === "wrist_view") setKV("wrist views", `azimuth ${p.azimuth}° · SAM-6D ${p.sam6d ?? "–"} · ${((p.ms || 0) / 1000).toFixed(1)} s`);
     if (st === "six_dof") { refreshImg("wrist"); setKV("6-DoF pose", `${p.views} views agree · fit ${p.fit} · ${(p.ms / 1000).toFixed(1)} s`); }
-    if (st === "map") setKV("fused map", `${p.voxels} voxels · table z ${p.table_z} m`);
+    if (st === "map" && p.voxels !== undefined) setKV("fused map", `${p.voxels} voxels from ${p.frames} RGB-D frames · table z ${p.table_z} m`);
     if (st === "plan") setKV("plan", p.ok === false ? `no feasible grasp` : `${p.grasp} · ${p.ms} ms · clearance ${p.clearance_mm} mm`);
     if (st === "policy_run") setKV("policy", `ACT · ${p.fps} Hz for ${p.seconds} s · OpenVINO CPU`);
     if (st === "policy_done") { reached.add("policy_run"); setKV("policy result", p.success ? `upright, ${p.on_pad_mm} mm off centre` : "not placed upright"); }
