@@ -9,7 +9,7 @@
   <option integrator="implicitfast" timestep="0.002" cone="elliptic" iterations="10" ls_iterations="50" impratio="10"/>
   <visual>
     <headlight diffuse="0.0 0.0 0.0" ambient="0.35 0.35 0.35" specular="0 0 0"/>
-    <quality shadowsize="8192" offsamples="8"/>
+    <quality shadowsize="0" offsamples="4"/>  <!-- no shadow maps: software (OSMesa) cameras render ~6x faster -->
     <map znear="0.01" zfar="10"/>
   </visual>
   <default>

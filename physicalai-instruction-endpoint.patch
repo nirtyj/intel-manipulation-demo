@@ -46,7 +46,7 @@ index ae11f68..96f1fe1 100644
              self._fail(data, f"the {others[0]} ended up in a bucket", dt)
              return
 diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py
-index c0cc4b9..325798f 100644
+index c0cc4b9..ba9d1ba 100644
 --- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py
 +++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py
 @@ -14,6 +14,7 @@ from __future__ import annotations
@@ -63,7 +63,7 @@ index c0cc4b9..325798f 100644
  
 +DEPTH_CAMERAS = frozenset(n for n in os.environ.get("PHYSICALAI_DEPTH_CAMERAS", "").split(",") if n)
 +"""Cameras that also render metric depth, served as RGB-D at ``GET /cameras/{name}/rgbd`` (opt-in)."""
-+DEPTH_PERIOD_S = 0.2
++DEPTH_PERIOD_S = float(os.environ.get("PHYSICALAI_DEPTH_PERIOD_S", "0.2"))
 +
 +
 +def camera_intrinsics(model: object, camera_id: int, width: int, height: int) -> np.ndarray:
