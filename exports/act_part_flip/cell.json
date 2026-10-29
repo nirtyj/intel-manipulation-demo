@@ -1,0 +1,10 @@
+{
+ "fps": 10.0,
+ "size": [
+  320,
+  240
+ ],
+ "episode_s": 49.6,
+ "demonstrations": 30,
+ "checkpoint": "runs/act_round4a/last.ckpt"
+}

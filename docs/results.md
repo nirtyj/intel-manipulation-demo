@@ -93,7 +93,7 @@ chunk smoother. It is scored by the simulator afterwards.
 | 1 | 25, cameras ~1 fps, RRT transfers | 8.9k steps, 39 epochs, 16 vCPU, 80 min | 1/11 | reaches the part, closes on air |
 | 3a | 27, cameras 11 fps, RRT transfers | 11.6k steps, 36 epochs, 2 h | 1/6, then 1/1 from the console | grasps; then stalls or wanders in the transfer |
 | 3b | 53, cameras 11 fps, RRT transfers | 11.2k steps, 18 epochs, 8 vCPU, 3 h | 0/6 | hovers at the pre-grasp |
-| 4a | 30, cameras 11 fps, same transfer every time | (running) | | |
+| 4a | 30, cameras 11 fps, same transfer every time | 10.8k steps, 34 epochs, 16 vCPU, 2 h, loss 0.037 | **4/8 (50%)**, placed 11–19 mm from centre, ~54 s per run | grasps, carries over the wall, places upright; misses still knock the part over |
 | 4b | 63, cameras 11 fps, same transfer every time | (running) | | |
 
 Open-loop check (round 3b on its own training episodes, frames fed exactly as the runtime feeds them):
@@ -110,7 +110,8 @@ What moved the policy, in order:
 1. **Fresh camera images.** Round 1 trained on images that lagged the joints by up to seconds and grasped
    air. With 11 fps cameras, round 3a closes on the part.
 2. **Consistent demonstrations.** Round 3a grasped, then stalled or wandered, because the RRT transfers took
-   a new route every run and the policy averaged them. Rounds 4a and 4b test the fixed route.
+   a new route every run and the policy averaged them. With the same amount of data but the fixed route,
+   round 4a went from 1/6 to 4/8.
 3. **Epochs over data.** Round 3b had twice the data but half the epochs, and it did worse than 3a.
 
 ### Deployment speed
