@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from v2 import run_v2
 from v2.objects import OBJECT
-from v2.arm import PandaKinematics
+from v2.arm import GRIP_OPEN, HOME_DEG, PandaKinematics
 
 ROOT = Path(__file__).resolve().parents[1]
 app = FastAPI(title="Talk to the Cell v2/v3")
@@ -122,8 +122,18 @@ def run(body: RunBody) -> dict:
 def reset() -> dict:
     if _state["busy"]:
         raise HTTPException(409, "A run is in progress")
-    # Same randomisation as the demonstrations: up to 2 cm and 30 degrees, never shown to either mode.
-    dx, dy, yaw = run_v2.reset_part(np.random.default_rng(), 0.02, 30.0)
+    _state["busy"] = True
+    try:
+        # Robot first: release whatever it holds, then glide home, so the part is placed on a clear table.
+        emit("reset_start")
+        c = cell()
+        c.grip = GRIP_OPEN
+        c.move_to(c.q(), duration=0.6, settle=0.3)
+        c.move_to(np.radians(HOME_DEG), duration=3.0, settle=0.5)
+        # Same randomisation as the demonstrations: up to 2 cm and 30 degrees, never shown to either mode.
+        dx, dy, yaw = run_v2.reset_part(np.random.default_rng(), 0.02, 30.0)
+    finally:
+        _state["busy"] = False
     emit("reset", dx_mm=round(dx * 1000), dy_mm=round(dy * 1000), yaw_deg=round(yaw))
     return {"ok": True}
 

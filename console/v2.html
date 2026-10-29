@@ -114,7 +114,7 @@ td.num { font-family: var(--mono); }
         <div class="actions">
           <button class="btn primary" id="runBtn">Run flip</button>
           <button class="btn stop" id="stopBtn">STOP</button>
-          <button class="btn" id="resetBtn">Reset part</button>
+          <button class="btn" id="resetBtn" title="Arm home, gripper open, part back upside down on the green pad">Reset</button>
         </div>
         <div class="rail" id="rail"></div>
       </div>
@@ -218,7 +218,9 @@ function handle(ev) {
     if (st === "policy_run") setKV("policy", `ACT · ${p.fps} Hz for ${p.seconds} s · OpenVINO CPU`);
     if (st === "policy_done") { reached.add("policy_run"); setKV("policy result", p.success ? `upright, ${p.on_pad_mm} mm off centre` : "not placed upright"); }
   }
-  if (ev.type === "reset") { reached.clear(); banner(`Part reset upside down on the green pad (moved ${p.dx_mm ?? 0}, ${p.dy_mm ?? 0} mm, turned ${p.yaw_deg ?? 0}°).`); }
+  if (ev.type === "reset_start") { busy = true; reached.clear(); banner("Resetting: gripper open, arm moving home"); }
+  if (ev.type === "reset") busy = false;
+  if (ev.type === "reset") { reached.clear(); banner(`Arm home; part reset upside down on the green pad (moved ${p.dx_mm ?? 0}, ${p.dy_mm ?? 0} mm, turned ${p.yaw_deg ?? 0}°).`); }
   $("#runBtn").disabled = busy; $("#resetBtn").disabled = busy;
   renderRail();
 }
