@@ -217,6 +217,7 @@ def perceive(cell: Cell, trial: Trial, wmap: WorldMap) -> np.ndarray | None:
             break
     if DIAG:  # diagnostics only: keep the views, and the simulator's pose next to them, for offline study
         stamp = int(time.time())
+        RUNS.mkdir(parents=True, exist_ok=True)
         post(PERCEPTION + f"/views/save?path={RUNS.resolve()}/views_{stamp}.npz")
         np.save(RUNS / f"views_{stamp}_truth.npy", truth())
     if r is None or r["T_world_obj"] is None or r["fit"] < MIN_FIT:
@@ -254,6 +255,7 @@ def flip(cell: Cell, trial: Trial) -> dict:
     else:
         cos = (np.trace(T[:3, :3].T @ gt0[:3, :3]) - 1) / 2
     result["pose_error_deg"] = round(float(np.degrees(np.arccos(np.clip(cos, -1, 1)))), 1)
+    RUNS.mkdir(parents=True, exist_ok=True)  # the console calls flip() directly, without main()
     np.savez(RUNS / f"planning_input_{int(time.time())}.npz", T=T, occupied=wmap.occupied(), table_z=wmap.table_z, q=cell.q(),
              counts_keys=np.array(list(wmap.counts.keys())), counts_vals=np.array(list(wmap.counts.values())))
     if cell.recorder is not None and cell.record_mode == "policy":
