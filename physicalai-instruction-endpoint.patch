@@ -45,8 +45,114 @@ index ae11f68..96f1fe1 100644
          if others:
              self._fail(data, f"the {others[0]} ended up in a bucket", dt)
              return
+diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py
+index c0cc4b9..325798f 100644
+--- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py
++++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py
+@@ -14,6 +14,7 @@ from __future__ import annotations
+ 
+ import contextlib
+ import functools
++import os
+ import subprocess  # noqa: S404 - runs this interpreter on a fixed script, never user input  # nosec B404
+ import sys
+ import threading
+@@ -131,6 +132,28 @@ class CameraConfig:
+             raise ValueError(msg)
+ 
+ 
++DEPTH_CAMERAS = frozenset(n for n in os.environ.get("PHYSICALAI_DEPTH_CAMERAS", "").split(",") if n)
++"""Cameras that also render metric depth, served as RGB-D at ``GET /cameras/{name}/rgbd`` (opt-in)."""
++DEPTH_PERIOD_S = 0.2
++
++
++def camera_intrinsics(model: object, camera_id: int, width: int, height: int) -> np.ndarray:
++    """Pinhole matrix of a MuJoCo camera (vertical ``fovy``, square pixels, centred principal point)."""
++    fy = 0.5 * height / np.tan(np.radians(float(model.cam_fovy[camera_id])) / 2.0)
++    return np.array([[fy, 0.0, width / 2.0], [0.0, fy, height / 2.0], [0.0, 0.0, 1.0]])
++
++
++def camera_pose_cv(data: object, camera_id: int) -> np.ndarray:
++    """World-from-camera transform in the OpenCV convention (x right, y down, z forward).
++
++    A MuJoCo camera looks down its -z axis with y up, so flip its y and z axes.
++    """
++    pose = np.eye(4)
++    pose[:3, :3] = np.asarray(data.cam_xmat[camera_id]).reshape(3, 3) @ np.diag([1.0, -1.0, -1.0])
++    pose[:3, 3] = np.asarray(data.cam_xpos[camera_id])
++    return pose
++
++
+ class CameraService:
+     """Render configured cameras of the current model into one :class:`FrameBuffer` each."""
+ 
+@@ -152,6 +175,10 @@ class CameraService:
+         self._last_frame_ts: dict[str, float] = {}
+         self._thread: CameraThread | None = None
+         self._data: object | None = None
++        self._model: object | None = None
++        self.rgbd: dict[str, dict[str, object]] = {}
++        """Latest RGB-D capture of each depth camera: rgb, depth (m), K, T_world_cam, t."""
++        self._last_depth_ts: dict[str, float] = {}
+ 
+     @property
+     def renderers(self) -> dict[str, object]:
+@@ -201,6 +228,8 @@ class CameraService:
+     def start(self, model: object, data: object) -> None:
+         """Create the buffers and renderers for *model* and start rendering *data*."""
+         self._data = data
++        self._model = model
++        self.rgbd.clear()
+         configured = {config.name for config in self.configs}
+         for name in [name for name in self.frame_buffers if name not in configured]:
+             del self.frame_buffers[name]  # a camera of the previous model; the HTTP server shares this dict
+@@ -315,6 +344,32 @@ class CameraService:
+             meter = self.meters.get(config.name)
+             if meter is not None:
+                 meter.add(now=now)
++            self._render_depth(config, frame, data, renderers, now)
++
++    def _render_depth(self, config: CameraConfig, frame: np.ndarray, data: object,
++                      renderers: dict[str, object], now: float) -> None:
++        """Pair the RGB frame with a depth render of the same state, a few times a second."""
++        depth_renderer = renderers.get(f"{config.name}#depth")
++        if depth_renderer is None or now - self._last_depth_ts.get(config.name, 0.0) < DEPTH_PERIOD_S:
++            return
++        import mujoco  # noqa: PLC0415
++
++        model = self._model
++        camera_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, config.name))
++        try:
++            depth_renderer.update_scene(data, camera=config.name)
++            depth = np.asarray(depth_renderer.render(), dtype=np.float32).copy()
++        except (RuntimeError, ValueError) as exc:
++            logger.debug("Depth render error for '{}': {}", config.name, exc)
++            return
++        self.rgbd[config.name] = {
++            "rgb": frame.copy(),
++            "depth": depth,
++            "K": camera_intrinsics(model, camera_id, config.width, config.height),
++            "T_world_cam": camera_pose_cv(data, camera_id),
++            "t": now,
++        }
++        self._last_depth_ts[config.name] = now
+ 
+     def _create_renderers(self, renderers: dict[str, object], model: object) -> None:
+         """Fill `renderers` with one renderer per camera, on the thread that will use them."""
+@@ -325,6 +380,11 @@ class CameraService:
+             for config in self.configs:
+                 try:
+                     created[config.name] = mujoco.Renderer(model, config.height, config.width)
++                    if config.name in DEPTH_CAMERAS:
++                        depth_renderer = mujoco.Renderer(model, config.height, config.width)
++                        depth_renderer.enable_depth_rendering()
++                        created[f"{config.name}#depth"] = depth_renderer
++                        logger.info("Camera {} also renders depth (RGB-D at /cameras/{}/rgbd)", config.name, config.name)
+                 except OSError as exc:
+                     logger.warning("Camera '{}' renderer unavailable: {}", config.name, exc)
+         finally:
 diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/control.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/control.py
-index ac04b19..6e2f180 100644
+index ac04b19..55f8216 100644
 --- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/control.py
 +++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/control.py
 @@ -271,6 +271,8 @@ class OperatorControls:
@@ -79,8 +185,16 @@ index ac04b19..6e2f180 100644
      def _init_episode_auto_reset(self) -> None:
          """Attach the scene's episode controller: the conveyor's, bucket sort's, else the cube-on-plate auto-reset."""
          from physicalai_mujoco_plugin.bucket_sort import BucketSortEpisode, BucketSortTask  # noqa: PLC0415
+@@ -557,6 +573,7 @@ class OperatorControls:
+         app = build_app(
+             service_name=self._owner_name or f"mujoco-{self._profile.name}",
+             buffers=self._cameras.frame_buffers,
++            rgbd=self._cameras.rgbd,
+             commands=self._commands,
+             get_status=self._http_status,
+             check_replay=self._replay_problem,
 diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/http_server.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/http_server.py
-index 78643dd..be3f91c 100644
+index 78643dd..2aee048 100644
 --- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/http_server.py
 +++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/http_server.py
 @@ -109,6 +109,14 @@ class SetAutoResetCommand:
@@ -120,7 +234,52 @@ index 78643dd..be3f91c 100644
  class AutoResetRequest(BaseModel):
      """Body for ``POST /episode/auto-reset``."""
  
-@@ -642,6 +658,13 @@ def _add_sim_control_routes(
+@@ -418,6 +434,7 @@ def build_app(
+     get_leader: Callable[[], dict[str, Any]] | None = None,
+     check_replay: Callable[[np.ndarray], str | None] | None = None,
+     jpeg_quality: int = 85,
++    rgbd: Mapping[str, Mapping[str, Any]] | None = None,
+ ) -> FastAPI:
+     """Build the FastAPI application serving camera streams and control.
+ 
+@@ -502,7 +519,7 @@ def build_app(
+             raise HTTPException(status_code=404, detail="No web viewer is running (start without --no-gui)")
+         return RedirectResponse(url, status_code=307)
+ 
+-    _add_camera_routes(app, buffers=buffers, get_status=get_status, jpeg_quality=jpeg_quality)
++    _add_camera_routes(app, buffers=buffers, get_status=get_status, jpeg_quality=jpeg_quality, rgbd=rgbd)
+     _add_scene_routes(app, commands=commands, get_status=get_status)
+     _add_sim_control_routes(app, commands=commands, get_status=get_status)
+     _add_replay_routes(app, commands=commands, get_status=get_status, check=check_replay)
+@@ -537,6 +554,7 @@ def _add_camera_routes(
+     buffers: Mapping[str, FrameBuffer],
+     get_status: Callable[[], dict[str, Any]],
+     jpeg_quality: int,
++    rgbd: Mapping[str, Mapping[str, Any]] | None = None,
+ ) -> None:
+     @app.get("/cameras")
+     def cameras() -> list[dict[str, Any]]:
+@@ -571,6 +589,19 @@ def _add_camera_routes(
+             raise HTTPException(status_code=503, detail=f"No frame rendered yet for {name!r}")
+         return Response(content=encode_jpeg(sample.frame, jpeg_quality), media_type="image/jpeg")
+ 
++    @app.get("/cameras/{name}/rgbd")
++    def rgbd_capture(name: str) -> Response:
++        """Latest RGB-D pair as an .npz: rgb (uint8), depth (float32, metres), K, T_world_cam (OpenCV), t."""
++        capture = (rgbd or {}).get(name)
++        if capture is None:
++            detail = f"No RGB-D for {name!r}: list it in PHYSICALAI_DEPTH_CAMERAS and wait for a frame"
++            raise HTTPException(status_code=404, detail=detail)
++        import io  # noqa: PLC0415
++
++        buffer = io.BytesIO()
++        np.savez_compressed(buffer, **{k: np.asarray(v) for k, v in capture.items()})
++        return Response(content=buffer.getvalue(), media_type="application/octet-stream")
++
+ 
+ def _add_scene_routes(
+     app: FastAPI,
+@@ -642,6 +673,13 @@ def _add_sim_control_routes(
          commands.put(SetAutoResetCommand(enabled=request.enabled, dwell_s=request.dwell_s))
          return {"status": "queued", "enabled": request.enabled, "dwell_s": request.dwell_s}
  

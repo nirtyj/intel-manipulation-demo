@@ -1,2 +1,5 @@
 events.jsonl
 __pycache__/
+models/grounding_dino_tiny.*
+models/*/templates/
+runs/

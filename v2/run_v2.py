@@ -1,0 +1,268 @@
+"""v2: flip the L-part from perception alone. Scene + wrist RealSense RGB-D -> Grounding DINO -> SAM-6D ->
+fused map -> grasp library + IK + RRT-Connect -> execution through physicalai's runtime -> re-perception.
+
+The simulator's object pose is read only after each trial, to score it.
+
+    python -m v2.run_v2 [--trials N] [--jitter 0.02] [--yaw-jitter 30]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import time
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import pinocchio as pin
+
+from v2.arm import CONTROL_HZ, GRIP_OPEN, HOME_DEG, PandaKinematics, Segment, interpolate
+from v2.look import solve_look_pose, tcp_to_camera
+from v2.perception.sensors import fetch_rgbd
+from v2.planner import CollisionWorld, FlipPlan, plan_flip
+from v2.world_map import WorldMap, robot_surface_samples
+
+SIM = "http://127.0.0.1:8080"
+PERCEPTION = "http://127.0.0.1:8100"
+ROBOT = "mujoco-franka_panda-follow"
+PART_START = {"position": [0.48, 0.24, 0.055], "wxyz": [0.0, 1.0, 0.0, 0.0]}  # upside down on the green pad
+PLACE_XY = np.array([0.48, -0.24])
+RUNS = Path(__file__).resolve().parents[1] / "runs" / "v2"
+MIN_FIT = 0.5  # share of observed points the posed model must explain before the robot acts on it
+
+
+def post(url: str, body: dict | None = None, timeout: float = 300) -> dict:
+    req = urllib.request.Request(url, data=json.dumps(body or {}).encode(), headers={"content-type": "application/json"}, method="POST")
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
+
+
+def truth() -> np.ndarray:
+    """Simulator ground truth: scoring only."""
+    o = next(o for o in json.load(urllib.request.urlopen(SIM + "/objects")) if o["joint"] == "part:joint")
+    w, x, y, z = o["wxyz"]
+    T = np.eye(4)
+    T[:3, :3] = pin.Quaternion(w, x, y, z).toRotationMatrix()
+    T[:3, 3] = o["position"]
+    return T
+
+
+def reset_part(rng: np.random.Generator | None, jitter: float, yaw_jitter_deg: float) -> None:
+    pose = json.loads(json.dumps(PART_START))
+    if rng is not None:
+        pose["position"][0] += rng.uniform(-jitter, jitter)
+        pose["position"][1] += rng.uniform(-jitter, jitter)
+        yaw = np.radians(rng.uniform(-yaw_jitter_deg, yaw_jitter_deg))
+        q = pin.Quaternion(pin.utils.rotate("z", yaw) @ pin.Quaternion(0.0, 1.0, 0.0, 0.0).toRotationMatrix())
+        pose["wxyz"] = [q.w, q.x, q.y, q.z]
+    post(SIM + "/objects/part:joint/pose", pose)
+    time.sleep(1.2)
+
+
+@dataclass
+class Trial:
+    events: list = field(default_factory=list)
+
+    def log(self, stage: str, **kw) -> None:
+        self.events.append({"t": round(time.time(), 3), "stage": stage, **kw})
+        print(f"  {stage:22s} " + " ".join(f"{k}={v}" for k, v in kw.items()), flush=True)
+
+
+class Cell:
+    def __init__(self, robot, kin: PandaKinematics) -> None:
+        self.robot, self.kin = robot, kin
+        self.world = CollisionWorld(kin)
+        self.grip = GRIP_OPEN
+        self.last_action: np.ndarray | None = None  # what the recorder logs as the action
+        self.recorder = None
+
+    def q(self) -> np.ndarray:
+        return np.radians(np.asarray(self.robot.get_observation().joint_positions, float)[:7])
+
+    def stream(self, traj: list[np.ndarray]) -> None:
+        period = 1.0 / CONTROL_HZ
+        tick = time.perf_counter()
+        for qk in traj:
+            self.last_action = np.r_[np.degrees(qk), self.grip]
+            self.robot.send_action(self.last_action, goal_time=2 * period)
+            tick += period
+            time.sleep(max(0.0, tick - time.perf_counter()))
+
+    def move_to(self, q_goal: np.ndarray, duration: float = 2.0, settle: float = 0.5) -> np.ndarray:
+        traj = interpolate(self.kin, Segment("move", "joint", duration, q_goal=q_goal), self.q())
+        self.stream(traj + [traj[-1]] * int(settle * CONTROL_HZ))
+        return traj[-1]
+
+    def mark(self, label: str, info: dict | None = None, cameras: list[str] = ()) -> None:
+        if self.recorder is None:
+            return
+        images = {}
+        for cam in cameras:
+            try:
+                images[cam] = urllib.request.urlopen(f"{PERCEPTION}/annotated/{cam}.png", timeout=5).read()
+            except OSError:
+                pass
+        self.recorder.mark(label, info, images)
+
+    def pause_recording(self) -> None:
+        if self.recorder is not None:
+            self.recorder.pause()
+
+    def resume_recording(self) -> None:
+        if self.recorder is not None:
+            self.recorder.resume()
+
+    def execute(self, plan: FlipPlan, trial: Trial) -> None:
+        q = self.q()
+        for step in plan.steps:
+            t0 = time.perf_counter()
+            self.mark(step.name)
+            if step.kind == "grip":
+                self.grip = step.grip
+                self.stream([q] * int(step.duration * CONTROL_HZ))
+            elif step.kind == "path":
+                for wp in step.waypoints[1:]:
+                    traj = interpolate(self.kin, Segment(step.name, "joint", 0.8, q_goal=wp), q)
+                    self.stream(traj)
+                    q = traj[-1]
+            else:
+                traj = interpolate(self.kin, Segment(step.name, "cart", step.duration, goal=step.goal), q)
+                self.stream(traj)
+                q = traj[-1]
+            trial.log("execute", step=step.name.replace(" ", "_"), ms=round((time.perf_counter() - t0) * 1000))
+
+
+def perceive(cell: Cell, trial: Trial, wmap: WorldMap) -> np.ndarray | None:
+    kin = cell.kin
+    q = cell.move_to(np.radians(HOME_DEG), duration=2.0)
+    cell.pause_recording()
+    c = post(PERCEPTION + "/coarse")
+    trial.log("scene_detect", score=c["detection_score"], ms=c["timings_ms"].get("total"))
+    cell.mark("scene detection", {"score": c["detection_score"], "ms": c["timings_ms"].get("total")}, ["overview"])
+    if c["position"] is None:
+        return None
+    coarse = np.array(c["position"])
+    scene = fetch_rgbd("overview")
+    wrist0 = fetch_rgbd("wrist", noisy=False)
+    T_tcp_cam = tcp_to_camera(kin, q, wrist0.T_world_cam)
+    exclude = [(coarse, 0.10)]
+    wmap.integrate(scene, robot_surface_samples(cell.world.robot_geom, cell.world.model, cell.world.data,
+                                                pin.GeometryData(cell.world.robot_geom), q), exclude)
+    look = solve_look_pose(kin, q, T_tcp_cam, coarse)
+    if look is None:
+        trial.log("look", ok=False)
+        return None
+    cell.resume_recording()
+    q = cell.move_to(look[0], duration=2.0, settle=0.8)
+    cell.pause_recording()
+    r = post(PERCEPTION + "/six_dof")
+    trial.log("six_dof", score=r["pose_score"], fit=r.get("fit"), dino=r["detection_score"], ms=r["timings_ms"].get("total"))
+    cell.mark("6-DoF pose", {"pose_score": r["pose_score"], "fit": r.get("fit"), "dino": r["detection_score"],
+                             **r["timings_ms"]}, ["wrist"])
+    if r["T_world_obj"] is None or (r.get("fit") or 0) < MIN_FIT:
+        # A poor fit means the pose does not explain the depth: look again from another side, never guess.
+        second = solve_look_pose(kin, q, T_tcp_cam, coarse, distance=0.28, azimuth_deg=35)
+        if second is None:
+            return None
+        cell.resume_recording()
+        q = cell.move_to(second[0], duration=1.5, settle=0.8)
+        cell.pause_recording()
+        r = post(PERCEPTION + "/six_dof")
+        trial.log("six_dof_retry", score=r["pose_score"], fit=r.get("fit"), ms=r["timings_ms"].get("total"))
+        cell.mark("6-DoF pose", {"pose_score": r["pose_score"], "fit": r.get("fit"), "dino": r["detection_score"],
+                                 **r["timings_ms"]}, ["wrist"])
+        if r["T_world_obj"] is None or (r.get("fit") or 0) < MIN_FIT:
+            return None
+    T = np.array(r["T_world_obj"])
+    wrist = fetch_rgbd("wrist")
+    wmap.integrate(wrist, robot_surface_samples(cell.world.robot_geom, cell.world.model, cell.world.data,
+                                                pin.GeometryData(cell.world.robot_geom), q), [(T[:3, 3], 0.10)])
+    trial.log("map", voxels=len(wmap.counts), table_z=round(float(wmap.table_z), 4), frames=wmap.frames)
+    return T
+
+
+def run_trial(cell: Cell, i: int, rng, args) -> dict:
+    reset_part(rng, args.jitter, args.yaw_jitter)
+    return {"trial": i, **flip(cell, Trial())}
+
+
+def flip(cell: Cell, trial: Trial) -> dict:
+    """One flip from wherever the part is: perceive, map, plan, execute, score."""
+    t_start = time.perf_counter()
+    if cell.recorder is not None:
+        cell.recorder.start(cell.robot, lambda: cell.last_action)
+    wmap = WorldMap()
+    T = perceive(cell, trial, wmap)
+    result = {"success": False}
+    gt0 = truth()
+    if T is None:
+        result["failure"] = "perception"
+        return {**result, "events": trial.events}
+    result["pose_error_mm"] = round(1000 * float(np.linalg.norm(T[:3, 3] - gt0[:3, 3])), 1)
+    result["pose_error_deg"] = round(float(np.degrees(np.arccos(np.clip((np.trace(T[:3, :3].T @ gt0[:3, :3]) - 1) / 2, -1, 1)))), 1)
+    np.savez(RUNS / "last_planning_input.npz", T=T, occupied=wmap.occupied(), table_z=wmap.table_z, q=cell.q(),
+             counts_keys=np.array(list(wmap.counts.keys())), counts_vals=np.array(list(wmap.counts.values())))
+    try:
+        plan = plan_flip(cell.kin, cell.world, wmap, cell.q(), T, PLACE_XY)
+    except RuntimeError as exc:
+        trial.log("plan", ok=False, why=str(exc)[:160])
+        result["failure"] = "planning"
+        return {**result, "events": trial.events}
+    trial.log("plan", grasp=plan.grasp, ms=round(plan.plan_ms), clearance_mm=round(1000 * plan.clearance_m))
+    cell.mark("plan", {"grasp": plan.grasp, "plan_ms": round(plan.plan_ms), "clearance_mm": round(1000 * plan.clearance_m),
+                       "voxels": len(wmap.counts)})
+    cell.resume_recording()
+    cell.execute(plan, trial)
+    time.sleep(1.0)
+    gt = truth()
+    upright = float(gt[2, 2])
+    on_pad = float(np.linalg.norm(gt[:2, 3] - PLACE_XY))
+    result.update(success=bool(upright > 0.95 and on_pad < 0.04), upright_cos=round(upright, 3), on_pad_mm=round(1000 * on_pad, 1),
+                  grasp=plan.grasp, clearance_mm=round(1000 * plan.clearance_m), plan_ms=round(plan.plan_ms),
+                  total_s=round(time.perf_counter() - t_start, 1))
+    return {**result, "events": trial.events}
+
+
+def finish(cell: Cell, result: dict) -> dict:
+    if cell.recorder is not None:
+        meta = {k: v for k, v in result.items() if k != "events"}
+        result["episode_dir"] = str(cell.recorder.stop(meta))
+    return result
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--trials", type=int, default=1)
+    ap.add_argument("--jitter", type=float, default=0.0)
+    ap.add_argument("--yaw-jitter", type=float, default=0.0)
+    ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--record", type=Path, default=None, help="record episodes for policy training into this folder")
+    args = ap.parse_args()
+    from physicalai.robot.transport import SharedRobot
+
+    RUNS.mkdir(parents=True, exist_ok=True)
+    kin = PandaKinematics()
+    robot = SharedRobot.attach(ROBOT, connect_timeout=30)
+    robot.connect()
+    cell = Cell(robot, kin)
+    if args.record is not None:
+        from v2.recorder import EpisodeRecorder
+        cell.recorder = EpisodeRecorder(args.record)
+    rng = np.random.default_rng(args.seed) if (args.jitter or args.yaw_jitter) else None
+    results = []
+    try:
+        for i in range(args.trials):
+            print(f"--- trial {i + 1}/{args.trials}", flush=True)
+            r = finish(cell, run_trial(cell, i, rng, args))
+            print("  RESULT " + json.dumps({k: v for k, v in r.items() if k != "events"}), flush=True)
+            results.append(r)
+            (RUNS / f"trial_{int(time.time())}_{i}.json").write_text(json.dumps(r, indent=1))
+    finally:
+        robot.disconnect()
+    ok = sum(r["success"] for r in results)
+    print(f"SUMMARY {ok}/{len(results)} successful flips (no ground truth in the loop)")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talk to the Cell v2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Two ways to do one task, side by side: perception + planning ("traditional") vs a learned ACT policy.
+   Left: Intel's live 3D viewer. Right: mode switch, pipeline steps, perception images, plan numbers, results.
+   Dark only. Green done/ok, amber in progress, red stopped/failed, blue = the learned policy. */
+:root {
+  color-scheme: dark;
+  --bg: #0c1215; --panel: #121a1e; --panel-2: #172126; --panel-3: #1d2a30;
+  --line: #233238; --line-2: #33464e;
+  --fg: #e2eaec; --muted: #8d9fa6; --faint: #60737a; --ice: #cde4ec;
+  --ok: #3fd08c; --ok-bg: #12301f; --warn: #f2b440; --warn-bg: #352812;
+  --bad: #f05a52; --bad-bg: #3a1513; --ai: #5aa8ff; --ai-bg: #142a45; --on-bad: #1c0706;
+  --display: "Barlow Semi Condensed", "Arial Narrow", sans-serif;
+  --body: "Barlow", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.45 var(--body); }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--ice); outline-offset: 2px; }
+.app { display: grid; gap: 12px; max-width: 1920px; margin: 0 auto; padding: 12px 16px;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-areas: "top top" "cell side" "log log"; }
+@media (max-width: 1020px) { .app { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "cell" "side" "log"; } }
+.top { grid-area: top; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 18px; }
+.name { font: 700 23px/1.05 var(--display); }
+.sub { font: 600 11.5px var(--display); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { font-size: 12.5px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--panel); white-space: nowrap; }
+.tag b { color: var(--fg); font-weight: 600; }
+.conn i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--bad); margin-right: 6px; }
+.conn.on i { background: var(--ok); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; display: flex; flex-direction: column; }
+.panel-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+.panel-h h2 { margin: 0; font: 600 13px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.aux { font-size: 12px; color: var(--faint); }
+.cell { grid-area: cell; }
+.side { grid-area: side; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.stage { position: relative; aspect-ratio: 16 / 10; min-height: 380px; margin: 12px 14px 14px; border-radius: 8px; overflow: hidden; background: #000; border: 1px solid var(--line); }
+.stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.banner { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); max-width: calc(100% - 24px); width: max-content;
+  font: 600 17px/1.3 var(--display); padding: 8px 14px; border-radius: 6px; background: var(--panel-3); border: 1px solid var(--line-2); pointer-events: none; }
+.banner.ai { background: var(--ai-bg); border-color: var(--ai); }
+.banner.bad { background: var(--bad); color: var(--on-bad); border-color: var(--bad); }
+.body { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.mode { border: 1px solid var(--line-2); background: var(--panel-2); border-radius: 8px; padding: 10px 12px; text-align: left; }
+.mode b { display: block; font: 600 17px var(--display); }
+.mode span { font-size: 12.5px; color: var(--muted); }
+.mode[aria-pressed="true"] { border-color: var(--ice); background: var(--panel-3); }
+.mode.ai[aria-pressed="true"] { border-color: var(--ai); background: var(--ai-bg); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 7px; padding: 8px 14px; font-weight: 600; }
+.btn.primary { background: var(--ice); color: var(--bg); border-color: var(--ice); }
+.btn.stop { background: var(--bad); color: var(--on-bad); border-color: var(--bad); }
+.btn:disabled { opacity: .45; cursor: default; }
+.rail { display: flex; flex-wrap: wrap; gap: 4px; }
+.rail span { font: 500 11.5px var(--mono); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--line); color: var(--faint); }
+.rail span.done { color: var(--ok); border-color: var(--ok-bg); background: var(--ok-bg); }
+.rail span.on { color: var(--bg); background: var(--warn); border-color: var(--warn); }
+.imgs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.imgs figure { margin: 0; background: #000; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.imgs img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }
+.imgs figcaption { font: 500 11.5px var(--mono); color: var(--muted); padding: 4px 8px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 14px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th { font: 600 12px var(--display); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+td.num { font-family: var(--mono); }
+.log { grid-area: log; }
+#log { margin: 0; padding: 8px 14px 12px; max-height: 200px; overflow: auto; font: 11.5px/1.55 var(--mono); color: var(--muted); white-space: pre; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div><div class="name">Talk to the Cell</div><div class="sub">v2 traditional manipulation · v3 physical AI policy</div></div>
+    <div class="meta">
+      <span class="tag"><b>Franka Panda</b> in Intel's MuJoCo plugin · real physics</span>
+      <span class="tag"><b>OpenVINO 2026.4</b> Grounding DINO + SAM-6D</span>
+      <span class="tag"><b>Pinocchio + Coal</b> IK, collisions, RRT-Connect</span>
+      <span class="tag"><b>physicalai</b> runtime · ACT</span>
+      <span class="tag conn" id="conn"><i></i><span>connecting</span></span>
+    </div>
+  </header>
+
+  <section class="panel cell" aria-label="Live cell">
+    <div class="panel-h"><h2>Live cell</h2><span class="aux">Intel's 3D viewer · drag the part to change the world</span></div>
+    <div class="stage">
+      <iframe id="viewer" title="MuJoCo 3D viewer"></iframe>
+      <div class="banner" id="banner">Idle. Pick a mode and run.</div>
+    </div>
+  </section>
+
+  <div class="side">
+    <section class="panel" aria-label="Mode">
+      <div class="panel-h"><h2>Mode</h2><span class="aux">same cell, same task</span></div>
+      <div class="body">
+        <div class="modes">
+          <button class="mode" data-mode="traditional" aria-pressed="true"><b>Traditional manipulation</b><span>RGB-D → DINO → SAM-6D → map → grasp + IK + RRT</span></button>
+          <button class="mode ai" data-mode="act" aria-pressed="false"><b>Physical AI policy (ACT)</b><span>cameras + joints → ACT on OpenVINO → actions</span></button>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="runBtn">Run flip</button>
+          <button class="btn stop" id="stopBtn">STOP</button>
+          <button class="btn" id="resetBtn">Reset part</button>
+        </div>
+        <div class="rail" id="rail"></div>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Perception">
+      <div class="panel-h"><h2>Perception</h2><span class="aux" id="percAux">traditional mode only</span></div>
+      <div class="body">
+        <div class="imgs">
+          <figure><img id="imgScene" alt="Scene camera detection"><figcaption>scene D435 · Grounding DINO + depth mask</figcaption></figure>
+          <figure><img id="imgWrist" alt="Wrist camera 6-DoF pose"><figcaption>wrist D405 · DINO + SAM-6D pose</figcaption></figure>
+        </div>
+        <dl class="kv" id="kv"></dl>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Results">
+      <div class="panel-h"><h2>Results</h2><span class="aux">scored by the simulator afterwards, never fed back</span></div>
+      <div class="body">
+        <table><thead><tr><th>Mode</th><th>Runs</th><th>Success</th><th>Median time</th></tr></thead><tbody id="results"></tbody></table>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel log" aria-label="Events">
+    <div class="panel-h"><h2>Event stream</h2><span class="aux">ws /events</span></div>
+    <pre id="log"></pre>
+  </section>
+</div>
+<script>
+(() => {
+"use strict";
+const $ = s => document.querySelector(s);
+let mode = "traditional", busy = false;
+const RAILS = {
+  traditional: [["scene_detect", "Detect"], ["six_dof", "6-DoF pose"], ["map", "Fuse map"], ["plan", "Plan"], ["execute", "Execute"], ["done", "Done"]],
+  act: [["observe", "Observe"], ["policy", "ACT policy"], ["execute", "Execute"], ["done", "Done"]],
+};
+const reached = new Set();
+function renderRail() {
+  const rail = $("#rail"); rail.textContent = "";
+  let current = null;
+  for (const [key] of RAILS[mode]) if (!reached.has(key)) { current = key; break; }
+  for (const [key, label] of RAILS[mode]) {
+    const el = document.createElement("span");
+    el.textContent = label;
+    el.className = reached.has(key) ? "done" : (busy && key === current ? "on" : "");
+    rail.append(el);
+  }
+}
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll(".mode").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
+  $("#percAux").textContent = m === "traditional" ? "Grounding DINO + SAM-6D on OpenVINO" : "not used: the policy sees raw pixels";
+  reached.clear(); renderRail();
+}
+document.querySelectorAll(".mode").forEach(b => b.addEventListener("click", () => { if (!busy) setMode(b.dataset.mode); }));
+function banner(text, cls = "") { const b = $("#banner"); b.textContent = text; b.className = "banner " + cls; }
+const kv = {};
+function setKV(k, v) { kv[k] = v; const dl = $("#kv"); dl.textContent = ""; for (const [a, b] of Object.entries(kv)) { const dt = document.createElement("dt"); dt.textContent = a; const dd = document.createElement("dd"); dd.textContent = b; dl.append(dt, dd); } }
+function refreshImg(cam) { const el = cam === "overview" ? $("#imgScene") : $("#imgWrist"); el.src = `/perception/${cam}.png?t=${Date.now()}`; }
+function renderStats(stats) {
+  const tb = $("#results"); tb.textContent = "";
+  for (const [m, label] of [["traditional", "Traditional"], ["act", "ACT policy"]]) {
+    const s = stats[m] || { runs: 0, success: 0, times_s: [] };
+    const t = [...s.times_s].sort((a, b) => a - b); const med = t.length ? t[Math.floor((t.length - 1) / 2)] + " s" : "–";
+    const tr = document.createElement("tr");
+    for (const [v, cls] of [[label, ""], [s.runs, "num"], [s.runs ? `${s.success}/${s.runs}` : "–", "num"], [med, "num"]]) { const td = document.createElement("td"); td.textContent = v; td.className = cls; tr.append(td); }
+    tb.append(tr);
+  }
+}
+const STAGE_TEXT = { scene_detect: "Finding the part with the scene camera", six_dof: "Estimating its 6-DoF pose with the wrist camera",
+  six_dof_retry: "Low fit: looking again from another side", map: "Fusing depth into an obstacle map", plan: "Planning grasp, IK and a collision-free path",
+  execute: "Executing", observe: "Policy observing cameras and joints", policy: "ACT policy acting" };
+const log = [];
+function handle(ev) {
+  const p = ev.payload || {};
+  log.unshift(JSON.stringify(ev)); if (log.length > 150) log.pop(); $("#log").textContent = log.join("\n");
+  if (ev.type === "hello") { busy = p.busy; renderStats(p.stats || {}); }
+  if (ev.type === "run") {
+    if (p.state === "started") { busy = true; reached.clear(); banner(p.mode === "act" ? "ACT policy running" : "Traditional pipeline running", p.mode === "act" ? "ai" : ""); }
+    if (p.state === "done") { busy = false; reached.add("done"); const r = p.result || {}; renderStats(p.stats || {});
+      banner(r.success ? `Done: part upright on the pad (${r.on_pad_mm} mm off centre)` : `Finished: ${r.failure || "part not placed upright"}`, r.success ? "" : "bad"); }
+    if (p.state === "stopped") { busy = false; banner("Stopped. The arm holds.", "bad"); }
+    if (p.state === "error") { busy = false; banner("Error: " + p.error, "bad"); }
+  }
+  if (ev.type === "stage") {
+    const st = p.stage; const key = st === "six_dof_retry" ? "six_dof" : st;
+    if (st === "execute") reached.add("plan");
+    reached.add(key === "execute" ? "execute" : key);
+    if (STAGE_TEXT[st]) banner(STAGE_TEXT[st] + (p.step ? `: ${String(p.step).replace(/_/g, " ")}` : ""), mode === "act" ? "ai" : "");
+    if (st === "scene_detect") { refreshImg("overview"); setKV("scene DINO", `${p.score} · ${(p.ms / 1000).toFixed(1)} s`); }
+    if (st.startsWith("six_dof")) { refreshImg("wrist"); setKV("SAM-6D", `score ${p.score} · fit ${p.fit} · ${(p.ms / 1000).toFixed(1)} s`); }
+    if (st === "map") setKV("fused map", `${p.voxels} voxels · table z ${p.table_z} m`);
+    if (st === "plan") setKV("plan", p.ok === false ? `no feasible grasp` : `${p.grasp} · ${p.ms} ms · clearance ${p.clearance_mm} mm`);
+    if (st === "policy") setKV("policy", `${p.steps || ""} steps · ${p.ms_per_step || ""} ms/step`);
+  }
+  if (ev.type === "reset") { reached.clear(); banner("Part reset upside down on the green pad."); }
+  $("#runBtn").disabled = busy; $("#resetBtn").disabled = busy;
+  renderRail();
+}
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
+  if (!r.ok) { const j = await r.json().catch(() => ({})); banner(j.detail || `${path} failed`, "bad"); }
+}
+$("#runBtn").addEventListener("click", () => post("/run", { mode }));
+$("#stopBtn").addEventListener("click", () => post("/stop"));
+$("#resetBtn").addEventListener("click", () => post("/reset"));
+document.addEventListener("keydown", e => { if (e.key === "Escape") post("/stop"); });
+$("#viewer").src = `${location.protocol}//${location.hostname}:9090/`;
+function connect() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/events`);
+  ws.onopen = () => { $("#conn").classList.add("on"); $("#conn span").textContent = "live"; };
+  ws.onmessage = m => handle(JSON.parse(m.data));
+  ws.onclose = () => { $("#conn").classList.remove("on"); $("#conn span").textContent = "reconnecting"; setTimeout(connect, 1500); };
+}
+connect(); setMode("traditional"); renderStats({});
+})();
+</script>
+</body>
+</html>
