@@ -19,6 +19,7 @@ TCP_OFFSET = 0.110  # the plugin's end effector: 11 cm along the hand's z axis
 GRIP_OPEN, GRIP_CLOSED = 0.04, 0.0  # actuator8: half the finger separation, metres
 CONTROL_HZ = 50.0
 V_MAX = 1.0  # rad/s peak joint speed in joint-space moves (Panda limits: 2.2-2.6 rad/s)
+V_MAX_HELD = 0.5  # with the part in the hand: fast wrist turns pulled marginal grasps open
 HOME_DEG = np.array([0.0, -45.0, 0.0, -135.0, 0.0, 90.0, 45.0])  # a common Panda ready pose
 
 
@@ -117,6 +118,7 @@ class Segment:
     q_goal: np.ndarray | None = None
     grip: float | None = None
     dq7: float = 0.0  # pure joint-7 turn (the tool point is on joint 7's axis, so only the roll changes)
+    v_max: float | None = None  # peak joint speed for joint moves (rad/s); None = V_MAX
 
 
 @dataclass
@@ -226,7 +228,7 @@ def interpolate(kin: PandaKinematics, seg: Segment, q0: np.ndarray, rate: float 
         else:
             q1 = seg.q_goal if seg.q_goal is not None else kin.ik(seg.goal, q0)[0]
         # Quintic peak speed is 1.875x the average: stretch the segment so no joint exceeds V_MAX.
-        n = max(n, int(np.ceil(1.875 * np.max(np.abs(q1 - q0)) / V_MAX * rate)))
+        n = max(n, int(np.ceil(1.875 * np.max(np.abs(q1 - q0)) / (seg.v_max or V_MAX) * rate)))
         return [q0 + smoothstep((i + 1) / n) * (q1 - q0) for i in range(n)]
     start = kin.fk(q0)
     out, q = [], q0.copy()

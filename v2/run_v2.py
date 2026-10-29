@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import pinocchio as pin
 
-from v2.arm import CONTROL_HZ, GRIP_OPEN, HOME_DEG, PandaKinematics, Segment, interpolate
+from v2.arm import CONTROL_HZ, GRIP_OPEN, HOME_DEG, V_MAX_HELD, PandaKinematics, Segment, interpolate
 from v2.look import solve_look_pose, tcp_to_camera
 from v2.perception.sensors import fetch_rgbd
 from v2.planner import PART_BOXES, CollisionWorld, FlipPlan, plan_flip
@@ -121,15 +121,18 @@ class Cell:
 
     def execute(self, plan: FlipPlan, trial: Trial) -> None:
         q = self.q()
+        holding = False
         for step in plan.steps:
             t0 = time.perf_counter()
             self.mark(step.name)
             if step.kind == "grip":
                 self.grip = step.grip
+                holding = step.grip < GRIP_OPEN
                 self.stream([q] * int(step.duration * CONTROL_HZ))
             elif step.kind == "path":
                 for wp in step.waypoints[1:]:
-                    traj = interpolate(self.kin, Segment(step.name, "joint", 0.8, q_goal=wp), q)
+                    traj = interpolate(self.kin, Segment(step.name, "joint", 0.8, q_goal=wp,
+                                                         v_max=V_MAX_HELD if holding else None), q)
                     self.stream(traj)
                     q = traj[-1]
             else:

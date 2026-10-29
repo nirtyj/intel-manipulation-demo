@@ -3,3 +3,4 @@ __pycache__/
 models/grounding_dino_tiny.*
 models/*/templates/
 runs/
+datasets/

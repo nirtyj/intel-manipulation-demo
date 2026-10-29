@@ -372,7 +372,7 @@ def plan_flip(kin: PandaKinematics, world: CollisionWorld, wmap: WorldMap, q_now
             Step("open", "grip", grip=GRIP_OPEN, duration=0.5),
             Step("to pre-grasp", "path", waypoints=path_pre),
             Step("approach", "cart", goal=pick, duration=1.5),
-            Step("close", "grip", grip=GRIP_CLOSED, duration=1.0),
+            Step("close", "grip", grip=GRIP_CLOSED, duration=1.5),  # let the grip settle before lifting
             Step("lift", "cart", goal=lift, duration=1.5),
             Step("transfer and turn over", "path", waypoints=path_transfer),
             Step("lower", "cart", goal=place, duration=1.6),

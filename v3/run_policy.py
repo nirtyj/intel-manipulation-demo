@@ -1,8 +1,8 @@
 """v3: run the trained ACT policy in the same cell, through Intel's physicalai runtime.
 
 ``RobotRuntime`` ticks at the rate the demonstrations were recorded at. Each tick it reads the Panda's
-joints (``SharedRobot``) and both cameras (the simulator's MJPEG streams through
-``physicalai.capture.IPCamera``), the exported OpenVINO policy (``physicalai.inference.InferenceModel``
+joints (``SharedRobot``) and both cameras (v3/sim_camera.py: a ``physicalai.capture.Camera`` on the
+simulator's latest frame, prepared as the recorder prepared it), the exported OpenVINO policy (``physicalai.inference.InferenceModel``
 inside a ``PolicySource``) returns the next action, and the runtime sends it. No detector, pose model,
 map or planner: the policy has only the two camera images and the joint state.
 
@@ -57,8 +57,9 @@ def _settings(export_dir: Path) -> dict:
 def run_policy_episode(cell: run_v2.Cell, emit=lambda *a, **k: None, stop_event: threading.Event | None = None,
                        export_dir: Path = EXPORT) -> dict:
     """One flip by the learned policy, from home. Scored afterwards against the simulator (scoring only)."""
-    from physicalai.capture import IPCamera
     from physicalai.inference import InferenceModel
+
+    from v3.sim_camera import SimSnapshotCamera
     from physicalai.runtime import PolicySource, RobotRuntime
 
     cfg = _settings(export_dir)
@@ -68,8 +69,7 @@ def run_policy_episode(cell: run_v2.Cell, emit=lambda *a, **k: None, stop_event:
     emit("stage", stage="policy_load", export=str(export_dir))
     model = InferenceModel(export_dir, backend="openvino", device="CPU")
     w, h = cfg["size"]
-    cameras = {name: IPCamera(url=f"{SIM}/cameras/{name}/mjpeg", fps=int(cfg["fps"]), width=w, height=h)
-               for name in CAMERAS}
+    cameras = {name: SimSnapshotCamera(name=name, size=(w, h)) for name in CAMERAS}
     runtime = RobotRuntime(robot=_Borrowed(cell.robot), action_source=PolicySource(model=model, task=TASK),
                            fps=cfg["fps"], cameras=cameras)
     stop = stop_event or threading.Event()
