@@ -46,7 +46,7 @@ index ae11f68..96f1fe1 100644
              self._fail(data, f"the {others[0]} ended up in a bucket", dt)
              return
 diff --git a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py
-index c0cc4b9..ba9d1ba 100644
+index c0cc4b9..b46be9f 100644
 --- a/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py
 +++ b/packages/physicalai-mujoco-plugin/src/physicalai_mujoco_plugin/cameras.py
 @@ -14,6 +14,7 @@ from __future__ import annotations
@@ -106,7 +106,7 @@ index c0cc4b9..ba9d1ba 100644
          configured = {config.name for config in self.configs}
          for name in [name for name in self.frame_buffers if name not in configured]:
              del self.frame_buffers[name]  # a camera of the previous model; the HTTP server shares this dict
-@@ -315,6 +344,32 @@ class CameraService:
+@@ -315,6 +344,34 @@ class CameraService:
              meter = self.meters.get(config.name)
              if meter is not None:
                  meter.add(now=now)
@@ -124,6 +124,8 @@ index c0cc4b9..ba9d1ba 100644
 +        camera_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, config.name))
 +        try:
 +            depth_renderer.update_scene(data, camera=config.name)
++            # The pose at the moment the scene was captured: physics keeps stepping while the render runs.
++            T_world_cam = camera_pose_cv(data, camera_id)
 +            depth = np.asarray(depth_renderer.render(), dtype=np.float32).copy()
 +        except (RuntimeError, ValueError) as exc:
 +            logger.debug("Depth render error for '{}': {}", config.name, exc)
@@ -132,14 +134,14 @@ index c0cc4b9..ba9d1ba 100644
 +            "rgb": frame.copy(),
 +            "depth": depth,
 +            "K": camera_intrinsics(model, camera_id, config.width, config.height),
-+            "T_world_cam": camera_pose_cv(data, camera_id),
++            "T_world_cam": T_world_cam,
 +            "t": now,
 +        }
 +        self._last_depth_ts[config.name] = now
  
      def _create_renderers(self, renderers: dict[str, object], model: object) -> None:
          """Fill `renderers` with one renderer per camera, on the thread that will use them."""
-@@ -325,6 +380,11 @@ class CameraService:
+@@ -325,6 +382,11 @@ class CameraService:
              for config in self.configs:
                  try:
                      created[config.name] = mujoco.Renderer(model, config.height, config.width)

@@ -62,8 +62,8 @@ class Replay:
         self.part = self.model.jnt_qposadr[names.index("part:joint")]
         self.renderer = mujoco.Renderer(self.model, 720, 1280)
         self.cam = mujoco.MjvCamera()
-        self.cam.lookat[:] = [0.40, 0.0, 0.12]
-        self.cam.distance, self.cam.azimuth, self.cam.elevation = 1.45, 212.0, -24.0
+        self.cam.lookat[:] = [0.40, 0.0, 0.22]  # high enough to keep the transfer arc (up to ~0.85 m) in frame
+        self.cam.distance, self.cam.azimuth, self.cam.elevation = 1.75, 212.0, -22.0
 
     def render(self, state: np.ndarray, part: np.ndarray) -> np.ndarray:
         q = self.data.qpos
@@ -82,8 +82,15 @@ def load_jpg(path: Path, size: tuple[int, int]) -> np.ndarray:
     return cv2.resize(img, size, interpolation=cv2.INTER_LINEAR)[:, :, ::-1] if img is not None else np.zeros((size[1], size[0], 3), np.uint8)
 
 
+TITLES = {
+    "traditional": "Talk to the Cell v2 · traditional manipulation · real physics, no ground truth in the loop",
+    "act": "Talk to the Cell v3 · ACT policy, trained and run on Intel Xeon · no detector, no planner",
+}
+
+
 def compose(main: np.ndarray, wrist: np.ndarray, scene: np.ndarray, stage: str, lines: list[str],
-            thumb: np.ndarray | None, overlay: tuple[np.ndarray, str, str] | None, t_label: str) -> np.ndarray:
+            thumb: np.ndarray | None, overlay: tuple[np.ndarray, str, str] | None, t_label: str,
+            title: str = TITLES["traditional"]) -> np.ndarray:
     canvas = Image.new("RGB", (W, H), BG)
     canvas.paste(Image.fromarray(main), (0, 0))
     canvas.paste(Image.fromarray(wrist), (1280, 0))
@@ -98,8 +105,7 @@ def compose(main: np.ndarray, wrist: np.ndarray, scene: np.ndarray, stage: str, 
         d.text((x, y), label, font=font(MONO, 18), fill=INK)
     # title band over the main view
     d.rectangle([0, 0, 1280, 48], fill=(0, 0, 0))
-    d.text((16, 10), "Talk to the Cell v2 · Franka Panda in Intel's MuJoCo sim · real physics, no ground truth in the loop",
-           font=font(FONT_B, 20), fill=INK)
+    d.text((16, 10), title, font=font(FONT_B, 20), fill=INK)
     d.text((1180, 12), t_label, font=font(MONO, 18), fill=MUTED)
     # bottom strip
     d.rectangle([0, 720, 1280, H], fill=PANEL)
@@ -140,7 +146,10 @@ def main() -> None:
     ap.add_argument("episode", type=Path)
     ap.add_argument("--out", type=Path, default=ROOT / "media/v2_flip.mp4")
     ap.add_argument("--hold", type=float, default=2.5, help="seconds to show each perception result")
+    ap.add_argument("--mode", choices=["traditional", "act"], default="traditional")
+    ap.add_argument("--policy", type=Path, default=ROOT / "exports/act_part_flip", help="act mode: the export shown")
     a = ap.parse_args()
+    title = TITLES[a.mode]
     ep = a.episode
     meta = json.loads((ep / "meta.json").read_text())
     data = np.load(ep / "data.npz")
@@ -157,6 +166,13 @@ def main() -> None:
     for m in marks:
         by_frame.setdefault(m["frame"], []).append(m)
     stage, lines, thumb = "Start", [meta.get("task", "")], None
+    if a.mode == "act":
+        cell = json.loads((a.policy / "cell.json").read_text()) if (a.policy / "cell.json").exists() else {}
+        stage = "ACT policy acting"
+        lines = ["Wrist + scene camera images and the joint state in, joint targets out, 10 times a second",
+                 f"Trained with physicalai-train on {cell.get('demonstrations', '?')} demonstrations recorded from v2",
+                 "bf16 on an Intel Xeon (AMX); exported to OpenVINO",
+                 "Runs through physicalai's RobotRuntime + InferenceModel on the CPU (~12 ms per step)"]
     plan_info = {}
     written = 0
     for i in range(n):
@@ -188,7 +204,8 @@ def main() -> None:
                 main = rep.render(state[i], viz[i])
                 wrist = load_jpg(ep / "wrist" / f"{i:06d}.jpg", (640, 480))
                 scene = load_jpg(ep / "overview" / f"{i:06d}.jpg", (640, 480))
-                frame = compose(main, wrist, scene, stage, lines, thumb, (img, title, caption), f"t={i / 10:5.1f}s")
+                frame = compose(main, wrist, scene, stage, lines, thumb, (img, title, caption), f"t={i / 10:5.1f}s",
+                                title=TITLES[a.mode])
                 for _ in range(int(a.hold * FPS)):
                     ff.stdin.write(frame.tobytes())
                     written += 1
@@ -202,18 +219,22 @@ def main() -> None:
             if np.all(np.isfinite(viz[[i, j]])):
                 part[:3] = viz[i, :3] + s * (viz[j, :3] - viz[i, :3])
                 part[3:] = slerp(viz[i, 3:], viz[j, 3:], s)
-            frame = compose(rep.render(st, part), wrist, scene, stage, lines, thumb, None, f"t={(i + s) / 10:5.1f}s")
+            frame = compose(rep.render(st, part), wrist, scene, stage, lines, thumb, None, f"t={(i + s) / 10:5.1f}s",
+                            title=title)
             ff.stdin.write(frame.tobytes())
             written += 1
     # end card
     ok = meta.get("success")
     stage = "Done: part upright on the pad" if ok else "Episode ended"
     lines = [f"Result scored against the simulator afterwards: upright cos {meta.get('upright_cos')}, "
-             f"{meta.get('on_pad_mm')} mm from the pad centre",
-             f"Perception error vs truth: {meta.get('pose_error_mm')} mm, {meta.get('pose_error_deg')} deg",
-             f"Total {meta.get('total_s')} s on a 4-vCPU container (perception dominates)"]
+             f"{meta.get('on_pad_mm')} mm from the pad centre"]
+    if a.mode == "act":
+        lines += [f"{meta.get('ticks')} policy steps in {meta.get('total_s')} s, from pixels and joint angles only"]
+    else:
+        lines += [f"Perception error vs truth: {meta.get('pose_error_mm')} mm, {meta.get('pose_error_deg')} deg",
+                  f"Total {meta.get('total_s')} s on a 4-vCPU container (perception dominates)"]
     frame = compose(rep.render(state[-1], viz[-1]), load_jpg(ep / "wrist" / f"{n - 1:06d}.jpg", (640, 480)),
-                    load_jpg(ep / "overview" / f"{n - 1:06d}.jpg", (640, 480)), stage, lines, thumb, None, "")
+                    load_jpg(ep / "overview" / f"{n - 1:06d}.jpg", (640, 480)), stage, lines, thumb, None, "", title=title)
     for _ in range(3 * FPS):
         ff.stdin.write(frame.tobytes())
         written += 1

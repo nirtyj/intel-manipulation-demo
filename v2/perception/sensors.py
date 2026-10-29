@@ -6,6 +6,7 @@ numpy only, so both the robot side (physicalai env) and the perception service c
 from __future__ import annotations
 
 import io
+import time
 import urllib.request
 from dataclasses import dataclass
 
@@ -26,9 +27,20 @@ class RGBD:
     t: float
 
 
-def fetch_rgbd(name: str, rng: np.random.Generator | None = None, noisy: bool = True) -> RGBD:
-    raw = urllib.request.urlopen(f"{SIM}/cameras/{name}/rgbd", timeout=10).read()
-    z = np.load(io.BytesIO(raw))
+def _capture(name: str):
+    return np.load(io.BytesIO(urllib.request.urlopen(f"{SIM}/cameras/{name}/rgbd", timeout=10).read()))
+
+
+def fetch_rgbd(name: str, rng: np.random.Generator | None = None, noisy: bool = True, fresh: bool = True,
+               timeout: float = 3.0) -> RGBD:
+    """The camera's RGB-D capture. ``fresh``: wait for one rendered after this call, so a capture taken while
+    the arm was still settling is never used (depth renders a few times a second)."""
+    z = _capture(name)
+    if fresh:
+        t0, deadline = float(z["t"]), time.monotonic() + timeout
+        while float(z["t"]) <= t0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+            z = _capture(name)
     depth = z["depth"].astype(np.float32)
     depth[depth > 5.0] = 0.0  # far plane: no return
     if noisy:
