@@ -249,7 +249,11 @@ def flip(cell: Cell, trial: Trial) -> dict:
         result["failure"] = "perception"
         return {**result, "events": trial.events}
     result["pose_error_mm"] = round(1000 * float(np.linalg.norm(T[:3, 3] - gt0[:3, 3])), 1)
-    result["pose_error_deg"] = round(float(np.degrees(np.arccos(np.clip((np.trace(T[:3, :3].T @ gt0[:3, :3]) - 1) / 2, -1, 1)))), 1)
+    if OBJECT.axial:  # spin about its own axis is meaningless: score the axis direction (signed: up/down counts)
+        cos = float(T[:3, 2] @ gt0[:3, 2])
+    else:
+        cos = (np.trace(T[:3, :3].T @ gt0[:3, :3]) - 1) / 2
+    result["pose_error_deg"] = round(float(np.degrees(np.arccos(np.clip(cos, -1, 1)))), 1)
     np.savez(RUNS / f"planning_input_{int(time.time())}.npz", T=T, occupied=wmap.occupied(), table_z=wmap.table_z, q=cell.q(),
              counts_keys=np.array(list(wmap.counts.keys())), counts_vals=np.array(list(wmap.counts.values())))
     if cell.recorder is not None and cell.record_mode == "policy":
