@@ -118,6 +118,20 @@ class WorldMap:
                 del self.counts[k]
         return int(inside.sum())
 
+    def carve(self, points: np.ndarray, radius: float) -> int:
+        """Free the voxels within ``radius`` of ``points`` (e.g. the robot's body where it stands now:
+        whatever the cameras saw there was the robot itself). Returns how many voxels were removed."""
+        if not self.counts or not len(points):
+            return 0
+        keys = list(self.counts.keys())
+        centres = (np.array(keys) + 0.5) * VOXEL
+        d, _ = cKDTree(points).query(centres, distance_upper_bound=radius + 0.5 * VOXEL)
+        hit = np.isfinite(d)
+        for k, h in zip(keys, hit):
+            if h:
+                del self.counts[k]
+        return int(hit.sum())
+
     def occupied(self) -> np.ndarray:
         if not self.counts:
             return np.zeros((0, 3))

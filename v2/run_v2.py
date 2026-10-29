@@ -23,7 +23,7 @@ from v2.arm import CONTROL_HZ, GRIP_OPEN, HOME_DEG, PandaKinematics, Segment, in
 from v2.look import solve_look_pose, tcp_to_camera
 from v2.perception.sensors import fetch_rgbd
 from v2.planner import PART_BOXES, CollisionWorld, FlipPlan, plan_flip
-from v2.world_map import WorldMap, robot_surface_samples
+from v2.world_map import ROBOT_MARGIN, WorldMap, robot_surface_samples
 
 SIM = "http://127.0.0.1:8080"
 PERCEPTION = "http://127.0.0.1:8100"
@@ -191,6 +191,8 @@ def perceive(cell: Cell, trial: Trial, wmap: WorldMap) -> np.ndarray | None:
         if r["T_world_obj"] is not None and r["fit"] >= MIN_FIT:
             break
     if r is None or r["T_world_obj"] is None or r["fit"] < MIN_FIT:
+        if DIAG:
+            post(PERCEPTION + f"/views/save?path={RUNS.resolve()}/views_{int(time.time())}.npz")
         return None  # the views do not agree on a pose: never guess
     T = np.array(r["T_world_obj"])
     cut = wmap.cut_object(T, PART_BOXES)
@@ -226,6 +228,11 @@ def flip(cell: Cell, trial: Trial) -> dict:
     if cell.recorder is not None and cell.record_mode == "policy":
         # Training episodes start at home: the policy learns the flip from its cameras, not the look-around.
         cell.move_to(np.radians(HOME_DEG), duration=2.0)
+    # The robot's own body, where it stands now, is free space by definition.
+    carved = wmap.carve(robot_surface_samples(cell.world.robot_geom, cell.world.model, cell.world.data,
+                                              pin.GeometryData(cell.world.robot_geom), cell.q()), ROBOT_MARGIN)
+    if carved:
+        trial.log("map", carved_robot_voxels=carved)
     try:
         plan = plan_flip(cell.kin, cell.world, wmap, cell.q(), T, PLACE_XY)
     except RuntimeError as exc:

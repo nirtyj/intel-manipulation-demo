@@ -30,6 +30,9 @@ PART_UPRIGHT_Z = 0.055  # column centre above the table when it stands on its ba
 
 
 # ------------------------------------------------------------------ grasp library
+FREE_MOTION_PART_MARGIN = 0.015  # extra room around the part on free-space paths (tracking lag at speed)
+
+
 def grasp_library() -> list[tuple[str, pin.SE3]]:
     """Side grasps on the column, as tool poses in the part frame (tool z = approach, y = finger closing)."""
     grasps = []
@@ -87,15 +90,17 @@ class CollisionWorld:
     def _add(self, name: str, geometry: coal.CollisionGeometry, placement: pin.SE3, joint: int = 0) -> int:
         return self.geom.addGeometryObject(pin.GeometryObject(name, joint, placement, geometry))
 
-    def set_obstacles(self, world: WorldMap, part_pose: np.ndarray | None) -> None:
-        """Static obstacles: sensed table + octree, and the part where it was estimated to be."""
+    def set_obstacles(self, world: WorldMap, part_pose: np.ndarray | None, part_margin: float = 0.0) -> None:
+        """Static obstacles: sensed table + octree, and the part where it was estimated to be (grown by
+        ``part_margin``: free-space moves keep that much extra room, since the arm lags its command)."""
         self.reset()
         for name, g, M in world.obstacles():
             self.obstacle_ids.setdefault(name, []).append(self._add(name, g, M))
         if part_pose is not None:
             T = pin.SE3(part_pose[:3, :3], part_pose[:3, 3])
             for i, (half, centre) in enumerate(PART_BOXES):
-                gid = self._add(f"part_{i}", coal.Box(*(2 * np.array(half))), T * pin.SE3(np.eye(3), np.array(centre)))
+                gid = self._add(f"part_{i}", coal.Box(*(2 * (np.array(half) + part_margin))),
+                                T * pin.SE3(np.eye(3), np.array(centre)))
                 self.obstacle_ids.setdefault("part", []).append(gid)
         self._refresh()
 
@@ -309,7 +314,7 @@ def plan_flip(kin: PandaKinematics, world: CollisionWorld, wmap: WorldMap, q_now
     candidates.sort(key=lambda c: c[0])
     tried = []
     for _, name, g, pick in candidates:
-        world.set_obstacles(wmap, T_world_part)
+        world.set_obstacles(wmap, T_world_part, part_margin=FREE_MOTION_PART_MARGIN)
         pre = pick * pin.SE3(np.eye(3), np.array([0, 0, -0.10]))
         q_pre = ik_free(kin, world, pre, q_now)
         if q_pre is None:
@@ -318,6 +323,7 @@ def plan_flip(kin: PandaKinematics, world: CollisionWorld, wmap: WorldMap, q_now
         if path_pre is None:
             tried.append(f"{name}: no free path to pre-grasp"); continue
         why = []
+        world.set_obstacles(wmap, T_world_part)  # exact boxes: the open fingers straddle the column
         q_grasp = cart_free(world, kin, q_pre, pick, why=why)  # the part stays an obstacle: open fingers straddle the column
         if q_grasp is None:
             tried.append(f"{name}: approach blocked ({why[0] if why else ''})"); continue
@@ -355,10 +361,12 @@ def plan_flip(kin: PandaKinematics, world: CollisionWorld, wmap: WorldMap, q_now
         if placed is None:
             tried.append(f"{name}: no reachable, collision-free placement"); continue
         target, place, above, q_above, path_transfer, q_place, retreat = placed
-        world.set_obstacles(wmap, None)
+        placed_pose = target.homogeneous  # the part now stands on the pad: keep clear of it on the way out
+        world.set_obstacles(wmap, placed_pose)
         q_retreat = cart_free(world, kin, q_place, retreat)
         if q_retreat is None:
             q_retreat = kin.ik(retreat, q_place)[0]
+        world.set_obstacles(wmap, placed_pose, part_margin=FREE_MOTION_PART_MARGIN)
         path_home = rrt_connect(world, q_retreat, q_home, lo, hi, seed=2) or [q_retreat, q_home]
         steps = [
             Step("open", "grip", grip=GRIP_OPEN, duration=0.5),

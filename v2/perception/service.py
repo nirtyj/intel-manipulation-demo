@@ -117,6 +117,20 @@ def views_pose() -> dict:
         return _pose_response(obs, t0, len(views))
 
 
+@app.post("/views/save")
+def views_save(path: str) -> dict:
+    """Write the captured views (RGB-D, mask, SAM-6D hypotheses) to an .npz, to study a refusal offline."""
+    with _lock:
+        views = _state["views"]
+        out = {}
+        for i, v in enumerate(views):
+            out.update({f"v{i}_rgb": v.frame.rgb, f"v{i}_depth": v.frame.depth, f"v{i}_K": v.frame.K,
+                        f"v{i}_T_world_cam": v.frame.T_world_cam, f"v{i}_mask": v.mask,
+                        f"v{i}_cloud": v.cloud_world, f"v{i}_hyps": np.array(v.hypotheses)})
+        np.savez_compressed(path, n=len(views), **out)
+        return {"saved": path, "views": len(views)}
+
+
 @app.get("/annotated/{camera}.png")
 def annotated(camera: str) -> Response:
     img = _state["images"].get(camera)
