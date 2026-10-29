@@ -32,7 +32,8 @@ PART_START = {"position": [0.48, 0.24, 0.055], "wxyz": [0.0, 1.0, 0.0, 0.0]}  # 
 PLACE_XY = np.array([0.48, -0.24])
 RUNS = Path(__file__).resolve().parents[1] / "runs" / "v2"
 DIAG = os.environ.get("CELL_DIAG") == "1"
-MIN_FIT = 0.7  # mean over views of (surface fit - 2 x free-space violation) before the robot acts on a pose
+MIN_FIT = 0.93  # mean over views of (surface fit - 2 x free-space violation) before the robot acts on a pose
+# (measured: right poses score 0.95-1.00, half-turned ones 0.75-0.87)
 VIEWPOINTS = ((35.0, 0.28), (-35.0, 0.28), (0.0, 0.30))  # wrist look-at viewpoints: azimuth (deg), distance (m)
 
 
@@ -190,9 +191,11 @@ def perceive(cell: Cell, trial: Trial, wmap: WorldMap) -> np.ndarray | None:
                                  **r["timings_ms"]}, ["wrist"])
         if r["T_world_obj"] is not None and r["fit"] >= MIN_FIT:
             break
+    if DIAG:  # diagnostics only: keep the views, and the simulator's pose next to them, for offline study
+        stamp = int(time.time())
+        post(PERCEPTION + f"/views/save?path={RUNS.resolve()}/views_{stamp}.npz")
+        np.save(RUNS / f"views_{stamp}_truth.npy", truth())
     if r is None or r["T_world_obj"] is None or r["fit"] < MIN_FIT:
-        if DIAG:
-            post(PERCEPTION + f"/views/save?path={RUNS.resolve()}/views_{int(time.time())}.npz")
         return None  # the views do not agree on a pose: never guess
     T = np.array(r["T_world_obj"])
     cut = wmap.cut_object(T, PART_BOXES)

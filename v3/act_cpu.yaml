@@ -1,0 +1,49 @@
+# ACT for the part flip, sized for a CPU (Intel's pusht config, scaled down).
+#
+#   cd /home/user/talk-to-the-cell
+#   physicalai fit --config v3/act_cpu.yaml          (train env: physicalai-train)
+#
+# Demonstrations: v2 runs recorded at 10 Hz from home (v2/run_v2.py --record), converted with
+# v3/convert_lerobot.py. Two 320x240 cameras (wrist, overview) are resized to 120x160 inside the policy;
+# a 2 s action chunk (20 steps), re-planned every second.
+
+model:
+  class_path: physicalai.policies.ACT
+  init_args:
+    chunk_size: 20
+    n_action_steps: 10
+    image_size: [120, 160]
+    dim_model: 256
+    dim_feedforward: 1024
+    n_heads: 8
+    n_encoder_layers: 4
+    n_decoder_layers: 1
+    latent_dim: 32
+    kl_weight: 10.0
+    optimizer_lr: 1e-4
+    optimizer_lr_backbone: 1e-5
+
+data:
+  class_path: physicalai.data.lerobot.LeRobotDataModule
+  init_args:
+    repo_id: local/panda_part_flip
+    root: datasets/panda_part_flip
+    train_batch_size: 16
+    num_workers: 3
+    data_format: physicalai
+    image_transforms:
+      class_path: torchvision.transforms.v2.Compose
+      init_args:
+        transforms:
+          - class_path: torchvision.transforms.v2.ColorJitter
+            init_args:
+              contrast: [0.8, 1.2]
+              brightness: [0.8, 1.2]
+
+trainer:
+  max_steps: 8000
+  accelerator: cpu
+  devices: 1
+  precision: 32
+  log_every_n_steps: 50
+  default_root_dir: runs/act

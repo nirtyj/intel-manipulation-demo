@@ -153,6 +153,24 @@ def _flips() -> list[np.ndarray]:
     return out
 
 
+def _axis_rotations() -> list[np.ndarray]:
+    """The 24 rotations that map the part's axes onto each other (signed permutations, det +1)."""
+    import itertools
+
+    out = []
+    for perm in itertools.permutations(range(3)):
+        for signs in itertools.product((1, -1), repeat=3):
+            R = np.zeros((3, 3))
+            for row, (col, sgn) in enumerate(zip(perm, signs)):
+                R[row, col] = sgn
+            if np.linalg.det(R) > 0:
+                out.append(R)
+    return out
+
+
+CANDIDATE_ROTATIONS = _axis_rotations()
+
+
 def pin_rotate(axis: str, angle: float) -> np.ndarray:
     c, s = np.cos(angle), np.sin(angle)
     return {"x": np.array([[1, 0, 0], [0, c, -s], [0, s, c]]), "y": np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]]),
@@ -190,7 +208,7 @@ def view_score(T_world_obj: np.ndarray, view: View, model_m: np.ndarray, max_dis
     return fit, free_space_violation(T_cam_obj, model_m, view.frame.depth, view.frame.K), rmse
 
 
-def select_pose(views: list[View], model_m: np.ndarray):
+def select_pose(views: list[View], model_m: np.ndarray, rotations: list[np.ndarray] | None = None):
     """Best world pose over all views' hypotheses x half-turns, ICP-refined on the fused cloud."""
     import open3d as o3d
 
@@ -198,7 +216,7 @@ def select_pose(views: list[View], model_m: np.ndarray):
     best, best_views = None, []
     for view in views:
         for T0 in view.hypotheses:
-            for F in _flips():
+            for F in (_flips() if rotations is None else rotations):  # all 24 axis turns: same answers, 6-12x slower
                 T = T0.copy()
                 T[:3, :3] = T0[:3, :3] @ F
                 model = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(model_m @ T[:3, :3].T + T[:3, 3]))
